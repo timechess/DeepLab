@@ -1,0 +1,17 @@
+[project]
+name = "deeplab"
+version = "0.1.0"
+description = "基于Agent的AI科研辅助平台"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.135.0",
+    "google-genai>=1.65.0",
+    "python-dotenv>=1.2.2",
+    "tortoise-orm[asyncpg]>=1.1.5",
+    "uvicorn>=0.41.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
