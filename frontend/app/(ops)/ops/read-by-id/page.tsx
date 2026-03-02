@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-import { triggerReadByArxivIdAction } from '@/app/actions';
+import { ReadByIdForm } from '@/components/ops/read-by-id-form';
 
 function decodeParam(value: string | undefined): string | null {
   if (!value) {
@@ -42,19 +42,7 @@ export default async function ReadByArxivIdPage({
         <h3 className="panel-title" style={{ marginBottom: 12 }}>
           指定论文生成精读报告
         </h3>
-        <form action={triggerReadByArxivIdAction} style={{ display: 'grid', gap: 10 }}>
-          <input name="redirectTo" type="hidden" value="/ops/workflows" />
-          <input
-            name="paperId"
-            placeholder="输入 arXiv ID，例如 2602.22766"
-            required
-          />
-          <div>
-            <button className="button button-primary" type="submit">
-              生成精读报告
-            </button>
-          </div>
-        </form>
+        <ReadByIdForm />
       </section>
 
       <section className="panel" style={{ display: 'grid', gap: 8 }}>

@@ -1065,40 +1065,32 @@ async def read_paper_by_arxiv_id(payload: ManualReadByArxivIdRequest) -> dict[st
         input_payload={"paperIds": [paper_id], "sourceFilteringRunId": None},
     )
 
-    try:
-        result = await run_paper_reading(
-            paper_ids=[paper_id],
-            trigger_type=payload.trigger_type,
-            workflow_execution=workflow,
-            stage_execution=stage,
-            source_filtering_run=None,
-            task_metadata=payload.metadata,
-        )
-        await _finish_stage(stage, status="succeeded", output_payload=result)
-        await _finish_workflow(workflow, status="succeeded")
-        first_report = result.get("reports", [None])[0]
-        report_id = (
-            str(first_report.get("report_id")).strip()
-            if isinstance(first_report, dict) and first_report.get("report_id")
-            else None
-        )
-        return {
-            "paper_id": paper_id,
-            "title": persisted["title"],
-            "workflow_id": str(workflow.id),
-            "report_id": report_id,
-            "deduplicated": False,
-            "message": "精读任务已完成。",
-        }
-    except ValueError as exc:
-        await _finish_stage(stage, status="failed", error_message=str(exc))
-        await _finish_workflow(workflow, status="failed", error_message=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        await _finish_stage(stage, status="failed", error_message=str(exc))
-        await _finish_workflow(workflow, status="failed", error_message=str(exc))
-        logger.exception("Manual paper reading by arXiv ID failed, paper_id=%s", paper_id)
-        raise HTTPException(status_code=500, detail="按论文编号生成精读失败。") from exc
+    async def _runner() -> None:
+        try:
+            result = await run_paper_reading(
+                paper_ids=[paper_id],
+                trigger_type=payload.trigger_type,
+                workflow_execution=workflow,
+                stage_execution=stage,
+                source_filtering_run=None,
+                task_metadata=payload.metadata,
+            )
+            await _finish_stage(stage, status="succeeded", output_payload=result)
+            await _finish_workflow(workflow, status="succeeded")
+        except Exception as exc:
+            await _finish_stage(stage, status="failed", error_message=str(exc))
+            await _finish_workflow(workflow, status="failed", error_message=str(exc))
+            logger.exception("Manual paper reading by arXiv ID failed, paper_id=%s", paper_id)
+
+    asyncio.create_task(_runner())
+    return {
+        "paper_id": paper_id,
+        "title": persisted["title"],
+        "workflow_id": str(workflow.id),
+        "report_id": None,
+        "deduplicated": False,
+        "message": "已创建精读工作流，正在后台生成报告。",
+    }
 
 
 @app.get("/reading_reports")
