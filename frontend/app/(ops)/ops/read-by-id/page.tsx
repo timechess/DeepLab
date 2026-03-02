@@ -43,7 +43,7 @@ export default async function ReadByArxivIdPage({
           指定论文生成精读报告
         </h3>
         <form action={triggerReadByArxivIdAction} style={{ display: 'grid', gap: 10 }}>
-          <input name="redirectTo" type="hidden" value="/ops/read-by-id" />
+          <input name="redirectTo" type="hidden" value="/ops/workflows" />
           <input
             name="paperId"
             placeholder="输入 arXiv ID，例如 2602.22766"

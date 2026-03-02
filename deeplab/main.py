@@ -334,6 +334,31 @@ def _normalize_collection_result(payload: dict[str, Any] | None) -> dict[str, An
     return {"count": len(papers), "papers": papers}
 
 
+def _extract_collection_candidate_ids(collection: dict[str, Any]) -> list[str]:
+    papers = collection.get("papers")
+    if not isinstance(papers, list):
+        return []
+    return [item["id"] for item in papers if isinstance(item, dict) and item.get("id")]
+
+
+async def _filter_newly_collected_candidate_ids(
+    *,
+    candidate_ids: list[str],
+    workflow_started_at: datetime,
+) -> list[str]:
+    clean_ids = [paper_id.strip() for paper_id in candidate_ids if paper_id and paper_id.strip()]
+    if not clean_ids:
+        return []
+
+    recent_ids = set(
+        await Paper.filter(
+            id__in=clean_ids,
+            collected_at__gte=workflow_started_at,
+        ).values_list("id", flat=True)
+    )
+    return [paper_id for paper_id in clean_ids if paper_id in recent_ids]
+
+
 def _normalize_filtering_result(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
@@ -517,26 +542,62 @@ async def _execute_daily_workflow(workflow: WorkflowExecution) -> dict[str, Any]
         )
         filtering_reran = False
         if filtering_result is None:
-            candidate_ids = [
-                item["id"] for item in collection["papers"] if isinstance(item, dict) and item.get("id")
+            original_candidate_ids = _extract_collection_candidate_ids(collection)
+            candidate_ids = await _filter_newly_collected_candidate_ids(
+                candidate_ids=original_candidate_ids,
+                workflow_started_at=workflow.started_at,
+            )
+            candidate_set = set(candidate_ids)
+            excluded_existing_ids = [
+                paper_id for paper_id in original_candidate_ids if paper_id not in candidate_set
             ]
             filtering_stage = await WorkflowStageExecution.create(
                 workflow=workflow,
                 stage=STAGE_PAPER_FILTERING,
                 status="running",
                 input_payload={
+                    "originalCandidateIds": original_candidate_ids,
+                    "originalCandidateCount": len(original_candidate_ids),
                     "candidateIds": candidate_ids,
                     "candidateCount": len(candidate_ids),
+                    "excludedExistingIds": excluded_existing_ids,
+                    "excludedExistingCount": len(excluded_existing_ids),
                 },
             )
             try:
-                filtering_result_raw = await run_initial_screening(
-                    candidate_paper_ids=candidate_ids,
-                    trigger_type="workflow",
-                    workflow_execution=workflow,
-                    stage_execution=filtering_stage,
-                    task_metadata={"workflow_name": WORKFLOW_NAME_DAILY_PAPER_REPORTS},
-                )
+                if not candidate_ids:
+                    filtering_result_raw = {
+                        "run_id": None,
+                        "llm_invocation_id": None,
+                        "summary": "候选论文均已存在于数据库，已跳过初筛。",
+                        "candidate_count": 0,
+                        "selected_count": 0,
+                        "selected_papers": [],
+                        "candidate_ids": [],
+                        "selected_ids": [],
+                        "original_candidate_ids": original_candidate_ids,
+                        "original_candidate_count": len(original_candidate_ids),
+                        "excluded_existing_ids": excluded_existing_ids,
+                        "excluded_existing_count": len(excluded_existing_ids),
+                        "deduplicated_before_filtering": True,
+                    }
+                else:
+                    filtering_result_raw = await run_initial_screening(
+                        candidate_paper_ids=candidate_ids,
+                        trigger_type="workflow",
+                        workflow_execution=workflow,
+                        stage_execution=filtering_stage,
+                        task_metadata={
+                            "workflow_name": WORKFLOW_NAME_DAILY_PAPER_REPORTS,
+                            "original_candidate_count": len(original_candidate_ids),
+                            "excluded_existing_count": len(excluded_existing_ids),
+                        },
+                    )
+                    filtering_result_raw["original_candidate_ids"] = original_candidate_ids
+                    filtering_result_raw["original_candidate_count"] = len(original_candidate_ids)
+                    filtering_result_raw["excluded_existing_ids"] = excluded_existing_ids
+                    filtering_result_raw["excluded_existing_count"] = len(excluded_existing_ids)
+                    filtering_result_raw["deduplicated_before_filtering"] = True
                 await _finish_stage(
                     filtering_stage,
                     status="succeeded",
