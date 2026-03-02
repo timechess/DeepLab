@@ -3,11 +3,13 @@ import json
 import logging
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import quote
 from urllib import request
 
 from deeplab.model import Paper
 
 DAILY_PAPERS_URL = "https://huggingface.co/api/daily_papers"
+PAPER_DETAIL_URL_TEMPLATE = "https://huggingface.co/api/papers/{paper_id}"
 REQUEST_TIMEOUT_SECONDS = 30
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,24 @@ def fetch_daily_papers_payload(
         status = getattr(response, "status", response.getcode())
         if status != 200:
             raise RuntimeError(f"Failed to fetch daily papers: HTTP {status}")
+
+        body = response.read().decode("utf-8")
+        return json.loads(body)
+
+
+def _build_paper_detail_url(paper_id: str) -> str:
+    return PAPER_DETAIL_URL_TEMPLATE.format(paper_id=quote(paper_id, safe=""))
+
+
+def fetch_paper_payload(
+    paper_id: str,
+    timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
+) -> Any:
+    req = request.Request(url=_build_paper_detail_url(paper_id), method="GET")
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        status = getattr(response, "status", response.getcode())
+        if status != 200:
+            raise RuntimeError(f"Failed to fetch paper {paper_id}: HTTP {status}")
 
         body = response.read().decode("utf-8")
         return json.loads(body)
@@ -44,7 +64,21 @@ def _process_paper(paper: dict) -> dict[str, Any]:
 
 def parse_daily_papers_payload(payload: Any) -> list[dict[str, Any]]:
     return [_process_paper(item["paper"]) for item in payload]
-    
+
+
+def parse_paper_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("paper payload must be a dict")
+    paper_raw = payload.get("paper")
+    if isinstance(paper_raw, dict):
+        return _process_paper(paper_raw)
+
+    # 部分接口直接返回与 daily_papers 的 item["paper"] 同构对象。
+    if "id" in payload and "title" in payload:
+        return _process_paper(payload)
+
+    raise ValueError("paper payload missing paper metadata")
+
 
 def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
@@ -156,3 +190,17 @@ async def collect_and_persist_papers() -> list[dict[str, str]]:
         collected.append({"id": paper.id, "title": paper.title})
 
     return collected
+
+
+async def collect_and_persist_paper_by_id(paper_id: str) -> dict[str, str]:
+    normalized_id = str(paper_id).strip()
+    if not normalized_id:
+        raise ValueError("paper_id 不能为空。")
+
+    payload = await asyncio.to_thread(fetch_paper_payload, normalized_id)
+    parsed_item = parse_paper_payload(payload)
+    normalized = _normalize_paper(parsed_item)
+
+    persisted_id = normalized.pop("id")
+    paper, _ = await Paper.update_or_create(id=persisted_id, defaults=normalized)
+    return {"id": paper.id, "title": paper.title}

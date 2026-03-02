@@ -2,11 +2,13 @@ import { z } from 'zod';
 
 import {
   filterResultSchema,
+  readByArxivIdResultSchema,
   readResultSchema,
   readingReportSchema,
   runtimeSettingSchema,
   screeningRuleSchema,
   triggerResponseSchema,
+  type ReadByArxivIdResult,
   type FilterResult,
   type ReadResult,
   type ReadingReport,
@@ -167,6 +169,15 @@ export function triggerReadPapers(): Promise<ReadResult> {
   });
 }
 
+export function triggerReadPaperByArxivId(paperId: string): Promise<ReadByArxivIdResult> {
+  return backendFetch<ReadByArxivIdResult>('/read_papers/by_arxiv_id', {
+    method: 'POST',
+    schema: readByArxivIdResultSchema,
+    body: { paperId },
+    timeoutMs: 120000,
+  });
+}
+
 export function getScreeningRules(): Promise<ScreeningRule[]> {
   return backendFetch<ScreeningRule[]>('/screening_rules', {
     schema: z.array(screeningRuleSchema),
@@ -232,14 +243,17 @@ export function deleteScreeningRule(ruleId: number): Promise<{ deleted: boolean 
 export function getReadingReports({
   limit = 20,
   paperId,
+  todayOnly,
 }: {
   limit?: number;
   paperId?: string;
+  todayOnly?: boolean;
 } = {}): Promise<ReadingReport[]> {
   return backendFetch<ReadingReport[]>('/reading_reports', {
     query: {
       limit,
       paper_id: paperId,
+      today_only: todayOnly,
     },
     schema: z.array(readingReportSchema),
   });

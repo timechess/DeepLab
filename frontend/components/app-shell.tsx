@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: '/ops/workflows', label: '工作流' },
   { href: '/ops/rules', label: '筛选规则' },
   { href: '/ops/reports', label: '报告管理' },
+  { href: '/ops/read-by-id', label: '报告生成' },
   { href: '/ops/settings', label: '系统设置' },
 ];
 

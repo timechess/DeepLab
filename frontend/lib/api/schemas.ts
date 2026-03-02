@@ -112,16 +112,28 @@ export const readResultSchema = z.object({
   paper_count: z.number().int(),
   succeeded_count: z.number().int(),
   failed_count: z.number().int(),
+  reused_count: z.number().int().optional(),
   succeeded_paper_ids: z.array(z.string()),
   failed_paper_ids: z.array(z.string()),
+  reused_paper_ids: z.array(z.string()).optional(),
   reports: z.array(
     z.object({
       report_id: z.string().uuid(),
       paper_id: z.string(),
       title: z.string(),
+      reused: z.boolean().optional(),
     }),
   ),
   workflow_id: z.string().uuid().optional(),
+});
+
+export const readByArxivIdResultSchema = z.object({
+  paper_id: z.string(),
+  title: z.string(),
+  workflow_id: z.string().uuid().nullable(),
+  report_id: z.string().uuid().nullable(),
+  deduplicated: z.boolean(),
+  message: z.string(),
 });
 
 export type WorkflowRun = z.infer<typeof workflowRunSchema>;
@@ -134,3 +146,4 @@ export type PaperMeta = z.infer<typeof paperMetaSchema>;
 export type TriggerResponse = z.infer<typeof triggerResponseSchema>;
 export type FilterResult = z.infer<typeof filterResultSchema>;
 export type ReadResult = z.infer<typeof readResultSchema>;
+export type ReadByArxivIdResult = z.infer<typeof readByArxivIdResultSchema>;

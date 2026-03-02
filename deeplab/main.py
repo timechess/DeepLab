@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, HTTPException
@@ -12,7 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from tortoise.contrib.fastapi import RegisterTortoise
 from dotenv import load_dotenv
 
-from deeplab.daily_papers.paper_collection import collect_and_persist_papers
+from deeplab.daily_papers.paper_collection import (
+    collect_and_persist_paper_by_id,
+    collect_and_persist_papers,
+)
 from deeplab.daily_papers.paper_filtering import (
     STAGE_PAPER_FILTERING,
     WORKFLOW_NAME_DAILY_PAPER_REPORTS,
@@ -43,6 +48,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 STAGE_PAPER_COLLECTION = "paper_collection"
+WORKFLOW_NAME_READING_REPORT_GENERATION = "reading_report_generation"
 CHINA_UTC_OFFSET = timedelta(hours=8)
 _DAILY_WORKFLOW_TRIGGER_LOCK = asyncio.Lock()
 
@@ -54,6 +60,28 @@ def _build_postgres_dsn() -> str:
     port = os.getenv("POSTGRES_PORT", "5432")
     db_name = os.getenv("POSTGRES_DB", "deeplab")
     return f"postgres://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{quote_plus(db_name)}"
+
+
+def _normalize_arxiv_id(raw: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("paperId 不能为空。")
+
+    text = re.sub(r"^arxiv\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = text.replace("http://", "https://", 1)
+
+    match = re.search(r"arxiv\.org/(abs|pdf)/([^?#]+)", text, flags=re.IGNORECASE)
+    if match:
+        text = match.group(2)
+
+    text = text.strip().strip("/")
+    if text.lower().endswith(".pdf"):
+        text = text[:-4]
+    text = re.sub(r"^(abs|pdf)/", "", text, flags=re.IGNORECASE).strip()
+
+    if not text:
+        raise ValueError("paperId 格式无效。")
+    return text
 
 
 def _seconds_until_next_daily_utc_run(now: datetime | None = None) -> float:
@@ -682,6 +710,14 @@ class ManualReadingRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ManualReadByArxivIdRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    paper_id: str = Field(alias="paperId", min_length=1)
+    trigger_type: str = Field(default="manual", alias="triggerType")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ReportCommentUpdateRequest(BaseModel):
     comment: str = ""
 
@@ -859,7 +895,7 @@ async def filter_papers(payload: ManualFilterRequest) -> dict[str, Any]:
 @app.post("/read_papers")
 async def read_papers(payload: ManualReadingRequest) -> dict[str, Any]:
     workflow = await WorkflowExecution.create(
-        workflow_name=WORKFLOW_NAME_DAILY_PAPER_REPORTS,
+        workflow_name=WORKFLOW_NAME_READING_REPORT_GENERATION,
         trigger_type=payload.trigger_type,
         status="running",
         context={"manualReading": True, "metadata": payload.metadata},
@@ -919,12 +955,104 @@ async def read_papers(payload: ManualReadingRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to generate reading reports") from exc
 
 
+@app.post("/read_papers/by_arxiv_id")
+async def read_paper_by_arxiv_id(payload: ManualReadByArxivIdRequest) -> dict[str, Any]:
+    try:
+        paper_id = _normalize_arxiv_id(payload.paper_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    existing_report = (
+        await PaperReadingReport.filter(paper_id=paper_id, status="succeeded")
+        .order_by("-created_at")
+        .select_related("paper")
+        .first()
+    )
+    if existing_report is not None:
+        return {
+            "paper_id": paper_id,
+            "title": existing_report.paper.title if existing_report.paper else "",
+            "workflow_id": None,
+            "report_id": str(existing_report.id),
+            "deduplicated": True,
+            "message": "该论文已有精读报告，已返回历史结果。",
+        }
+
+    try:
+        persisted = await collect_and_persist_paper_by_id(paper_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise HTTPException(status_code=404, detail=f"未找到论文元数据: {paper_id}") from exc
+        logger.exception("Fetch paper metadata failed: paper_id=%s", paper_id)
+        raise HTTPException(status_code=502, detail="拉取论文元数据失败。") from exc
+    except Exception as exc:
+        logger.exception("Fetch paper metadata failed: paper_id=%s", paper_id)
+        raise HTTPException(status_code=500, detail="拉取论文元数据失败。") from exc
+
+    workflow = await WorkflowExecution.create(
+        workflow_name=WORKFLOW_NAME_READING_REPORT_GENERATION,
+        trigger_type=payload.trigger_type,
+        status="running",
+        context={"manualReadByArxivId": True, "paperId": paper_id, "metadata": payload.metadata},
+    )
+    stage = await WorkflowStageExecution.create(
+        workflow=workflow,
+        stage=STAGE_PAPER_READING,
+        status="running",
+        input_payload={"paperIds": [paper_id], "sourceFilteringRunId": None},
+    )
+
+    try:
+        result = await run_paper_reading(
+            paper_ids=[paper_id],
+            trigger_type=payload.trigger_type,
+            workflow_execution=workflow,
+            stage_execution=stage,
+            source_filtering_run=None,
+            task_metadata=payload.metadata,
+        )
+        await _finish_stage(stage, status="succeeded", output_payload=result)
+        await _finish_workflow(workflow, status="succeeded")
+        first_report = result.get("reports", [None])[0]
+        report_id = (
+            str(first_report.get("report_id")).strip()
+            if isinstance(first_report, dict) and first_report.get("report_id")
+            else None
+        )
+        return {
+            "paper_id": paper_id,
+            "title": persisted["title"],
+            "workflow_id": str(workflow.id),
+            "report_id": report_id,
+            "deduplicated": False,
+            "message": "精读任务已完成。",
+        }
+    except ValueError as exc:
+        await _finish_stage(stage, status="failed", error_message=str(exc))
+        await _finish_workflow(workflow, status="failed", error_message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        await _finish_stage(stage, status="failed", error_message=str(exc))
+        await _finish_workflow(workflow, status="failed", error_message=str(exc))
+        logger.exception("Manual paper reading by arXiv ID failed, paper_id=%s", paper_id)
+        raise HTTPException(status_code=500, detail="按论文编号生成精读失败。") from exc
+
+
 @app.get("/reading_reports")
-async def list_reading_reports(limit: int = 20, paper_id: str | None = None) -> list[dict[str, Any]]:
+async def list_reading_reports(
+    limit: int = 20,
+    paper_id: str | None = None,
+    today_only: bool = False,
+) -> list[dict[str, Any]]:
     safe_limit = min(max(limit, 1), 200)
     query = PaperReadingReport.all()
     if paper_id:
         query = query.filter(paper_id=paper_id.strip())
+    if today_only:
+        day_start_utc, day_end_utc, _ = _china_day_window_utc()
+        query = query.filter(created_at__gte=day_start_utc, created_at__lt=day_end_utc)
     reports = await query.order_by("-created_at").limit(safe_limit).select_related("paper")
     return [_reading_report_to_dict(report, include_full=False) for report in reports]
 

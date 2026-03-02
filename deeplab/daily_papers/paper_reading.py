@@ -616,6 +616,25 @@ async def run_paper_reading(
 ) -> dict[str, Any]:
     task_metadata = task_metadata or {}
     papers, source_run = await _resolve_target_papers(paper_ids, source_filtering_run)
+    paper_ids_in_order = [paper.id for paper in papers]
+    paper_title_by_id = {paper.id: paper.title for paper in papers}
+
+    existing_reports = (
+        await PaperReadingReport.filter(
+            paper_id__in=paper_ids_in_order,
+            status="succeeded",
+        )
+        .order_by("-created_at")
+        .all()
+    )
+    existing_report_by_paper_id: dict[str, PaperReadingReport] = {}
+    for report in existing_reports:
+        if report.paper_id not in existing_report_by_paper_id:
+            existing_report_by_paper_id[report.paper_id] = report
+
+    papers_to_generate = [paper for paper in papers if paper.id not in existing_report_by_paper_id]
+    reused_paper_ids = [paper.id for paper in papers if paper.id in existing_report_by_paper_id]
+
     llm_settings = await get_llm_runtime_settings()
     (
         stage1_system_prompt_template,
@@ -640,15 +659,49 @@ async def run_paper_reading(
         workflow=workflow_execution,
         stage_execution=stage_execution,
         source_filtering_run=source_run,
-        paper_ids=[paper.id for paper in papers],
+        paper_ids=paper_ids_in_order,
     )
 
     succeeded_ids: list[str] = []
     failed_ids: list[str] = []
-    reports: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = [
+        {
+            "report_id": str(existing_report_by_paper_id[paper_id].id),
+            "paper_id": paper_id,
+            "title": paper_title_by_id.get(paper_id, ""),
+            "reused": True,
+        }
+        for paper_id in reused_paper_ids
+    ]
 
     try:
-        for paper in papers:
+        if not papers_to_generate:
+            reading_run.status = "succeeded"
+            reading_run.succeeded_paper_ids = []
+            reading_run.failed_paper_ids = []
+            reading_run.finished_at = datetime.now(tz=UTC)
+            await reading_run.save(
+                update_fields=[
+                    "status",
+                    "succeeded_paper_ids",
+                    "failed_paper_ids",
+                    "finished_at",
+                ]
+            )
+            return {
+                "run_id": str(reading_run.id),
+                "source_filtering_run_id": str(source_run.id) if source_run else None,
+                "paper_count": len(papers),
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "reused_count": len(reused_paper_ids),
+                "succeeded_paper_ids": [],
+                "failed_paper_ids": [],
+                "reused_paper_ids": reused_paper_ids,
+                "reports": reports,
+            }
+
+        for paper in papers_to_generate:
             try:
                 result = await _read_single_paper(
                     paper=paper,
@@ -691,19 +744,22 @@ async def run_paper_reading(
                         "report_id": str(report.id),
                         "paper_id": paper.id,
                         "title": paper.title,
+                        "reused": False,
                     }
                 )
             except Exception:
                 failed_ids.append(paper.id)
                 logger.exception("精读失败: paper_id=%s", paper.id)
 
-        if succeeded_ids and failed_ids:
+        if failed_ids and (succeeded_ids or reused_paper_ids):
             reading_run.status = "partial_succeeded"
         elif succeeded_ids:
             reading_run.status = "succeeded"
         else:
             reading_run.status = "failed"
-            reading_run.error_message = "所有论文精读均失败。"
+            reading_run.error_message = (
+                "本次触发中所有待生成论文均精读失败，且不存在可复用的历史报告。"
+            )
 
         reading_run.succeeded_paper_ids = succeeded_ids
         reading_run.failed_paper_ids = failed_ids
@@ -718,7 +774,7 @@ async def run_paper_reading(
             ]
         )
 
-        if not succeeded_ids:
+        if not succeeded_ids and not reused_paper_ids:
             raise RuntimeError("精读阶段失败：没有成功生成任何报告。")
 
         return {
@@ -727,15 +783,17 @@ async def run_paper_reading(
             "paper_count": len(papers),
             "succeeded_count": len(succeeded_ids),
             "failed_count": len(failed_ids),
+            "reused_count": len(reused_paper_ids),
             "succeeded_paper_ids": succeeded_ids,
             "failed_paper_ids": failed_ids,
+            "reused_paper_ids": reused_paper_ids,
             "reports": reports,
         }
     except Exception as exc:
         if reading_run.status == "running":
             reading_run.status = "failed"
             reading_run.error_message = str(exc)
-            reading_run.failed_paper_ids = [paper.id for paper in papers]
+            reading_run.failed_paper_ids = [paper.id for paper in papers_to_generate]
             reading_run.finished_at = datetime.now(tz=UTC)
             await reading_run.save(
                 update_fields=["status", "error_message", "failed_paper_ids", "finished_at"]

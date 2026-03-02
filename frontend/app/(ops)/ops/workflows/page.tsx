@@ -2,9 +2,6 @@ import Link from 'next/link';
 
 import {
   triggerDailyWorkflowAction,
-  triggerFetchPapersAction,
-  triggerFilterPapersAction,
-  triggerReadPapersAction,
 } from '@/app/actions';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { getWorkflowRuns } from '@/lib/api/client';
@@ -29,12 +26,11 @@ function formatWorkflowModel(context: Record<string, unknown>): string {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return [];
     }
-    const provider = String((value as { provider?: unknown }).provider ?? '').trim();
     const model = String((value as { model?: unknown }).model ?? '').trim();
-    if (!provider || !model) {
+    if (!model) {
       return [];
     }
-    return [`${provider} / ${model}`];
+    return [model];
   });
 
   return labels.length > 0 ? Array.from(new Set(labels)).join(' | ') : '--';
@@ -86,27 +82,6 @@ export default async function OpsWorkflowsPage({
               触发每日工作流
             </button>
           </form>
-
-          <form action={triggerFetchPapersAction} className="inline-form">
-            <input name="redirectTo" type="hidden" value={redirectTo} />
-            <button className="button button-secondary" type="submit">
-              手动收集论文
-            </button>
-          </form>
-
-          <form action={triggerFilterPapersAction} className="inline-form">
-            <input name="redirectTo" type="hidden" value={redirectTo} />
-            <button className="button button-secondary" type="submit">
-              手动初筛
-            </button>
-          </form>
-
-          <form action={triggerReadPapersAction} className="inline-form">
-            <input name="redirectTo" type="hidden" value={redirectTo} />
-            <button className="button button-secondary" type="submit">
-              手动精读
-            </button>
-          </form>
         </div>
 
         <form className="inline-form" method="get">
@@ -130,38 +105,62 @@ export default async function OpsWorkflowsPage({
 
       <section className="panel">
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table workflows-table">
             <thead>
               <tr>
                 <th>运行编号</th>
-                <th>工作流</th>
-                <th>触发方式</th>
-                <th>模型</th>
+                <th className="workflow-name-col">工作流</th>
+                <th className="workflow-trigger-col">触发方式</th>
+                <th className="workflow-model-col">模型</th>
                 <th>状态</th>
-                <th>开始时间</th>
-                <th>结束时间</th>
-                <th>错误信息</th>
+                <th className="workflow-time-col">开始时间</th>
+                <th className="workflow-time-col">结束时间</th>
               </tr>
             </thead>
             <tbody>
-              {filteredRuns.map((run) => (
+              {filteredRuns.map((run) => {
+                const modelLabel = formatWorkflowModel(run.context);
+                const workflowLabel = formatWorkflowName(run.workflowName);
+                const triggerLabel = formatTriggerType(run.triggerType);
+                const startedLabel = formatDateTime(run.startedAt);
+                const finishedLabel = formatDateTime(run.finishedAt);
+                return (
                 <tr key={run.id}>
                   <td>
-                    <Link className="code-link" href={`/ops/workflows/${run.id}`}>
+                    <Link className="code-link cell-nowrap-ellipsis workflow-run-id" href={`/ops/workflows/${run.id}`} title={run.id}>
                       {run.id}
                     </Link>
                   </td>
-                  <td>{formatWorkflowName(run.workflowName)}</td>
-                  <td>{formatTriggerType(run.triggerType)}</td>
-                  <td>{formatWorkflowModel(run.context)}</td>
+                  <td className="workflow-name-col">
+                    <span className="cell-nowrap-ellipsis" title={workflowLabel}>
+                      {workflowLabel}
+                    </span>
+                  </td>
+                  <td className="workflow-trigger-col">
+                    <span className="cell-nowrap-ellipsis" title={triggerLabel}>
+                      {triggerLabel}
+                    </span>
+                  </td>
+                  <td className="workflow-model-col">
+                    <span className="cell-nowrap-ellipsis" title={modelLabel}>
+                      {modelLabel}
+                    </span>
+                  </td>
                   <td>
                     <StatusBadge status={run.status} />
                   </td>
-                  <td>{formatDateTime(run.startedAt)}</td>
-                  <td>{formatDateTime(run.finishedAt)}</td>
-                  <td>{run.errorMessage || '--'}</td>
+                  <td className="workflow-time-col">
+                    <span className="cell-nowrap-ellipsis" title={startedLabel}>
+                      {startedLabel}
+                    </span>
+                  </td>
+                  <td className="workflow-time-col">
+                    <span className="cell-nowrap-ellipsis" title={finishedLabel}>
+                      {finishedLabel}
+                    </span>
+                  </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>

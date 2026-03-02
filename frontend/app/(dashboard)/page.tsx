@@ -18,6 +18,7 @@ import { formatDateTime } from '@/lib/time';
 
 const STAGE_FILTERING = 'paper_filtering';
 const STAGE_READING = 'paper_reading';
+const CHINA_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function isDefined<T>(value: T | undefined | null): value is T {
   return value !== undefined && value !== null;
@@ -28,6 +29,18 @@ function decodeParam(value: string | undefined): string | null {
     return null;
   }
   return decodeURIComponent(value);
+}
+
+function toChinaDateKey(date: Date): string {
+  return new Date(date.getTime() + CHINA_UTC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function isCreatedTodayInChina(isoDatetime: string): boolean {
+  const createdAt = new Date(isoDatetime);
+  if (Number.isNaN(createdAt.valueOf())) {
+    return false;
+  }
+  return toChinaDateKey(createdAt) === toChinaDateKey(new Date());
 }
 
 export default async function DashboardPage({
@@ -88,6 +101,7 @@ export default async function DashboardPage({
       : reportPool.slice(0, 20);
 
   const { commented, uncommented } = groupReportsByComment(linkedReports);
+  const todayUncommented = uncommented.filter((report) => isCreatedTodayInChina(report.createdAt));
 
   return (
     <section className="page">
@@ -160,7 +174,7 @@ export default async function DashboardPage({
         </article>
       </section>
 
-      <ReportGroups commented={commented} uncommented={uncommented} />
+      <ReportGroups commented={commented} uncommented={todayUncommented} />
     </section>
   );
 }

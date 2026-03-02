@@ -7,6 +7,7 @@ const WORKFLOW_NAME_LABELS: Record<string, string> = {
   fetch_papers: '论文收集工作流',
   filter_papers: '论文初筛工作流',
   read_papers: '论文精读工作流',
+  reading_report_generation: '精读报告生成',
 };
 
 const TRIGGER_TYPE_LABELS: Record<string, string> = {

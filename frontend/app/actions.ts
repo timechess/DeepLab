@@ -11,6 +11,7 @@ import {
   triggerDailyWorkflow,
   triggerFetchPapers,
   triggerFilterPapers,
+  triggerReadPaperByArxivId,
   triggerReadPapers,
   updateRuntimeSetting,
   updateReadingReportComment,
@@ -122,6 +123,37 @@ export async function triggerReadPapersAction(formData: FormData) {
       'notice',
       `精读完成：成功 ${result.succeeded_count}，失败 ${result.failed_count}`,
     );
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function triggerReadByArxivIdAction(formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/read-by-id');
+  const paperId = String(formData.get('paperId') ?? '').trim();
+  let nextLocation: string;
+
+  if (!paperId) {
+    nextLocation = withQuery(redirectTo, 'error', '请输入 arXiv ID。');
+    redirect(nextLocation);
+  }
+
+  try {
+    const result = await triggerReadPaperByArxivId(paperId);
+    revalidatePath('/');
+    revalidatePath('/ops/reports');
+    revalidatePath('/ops/workflows');
+    revalidatePath('/ops/read-by-id');
+
+    nextLocation = withQuery(redirectTo, 'notice', result.message);
+    if (result.report_id) {
+      nextLocation = withQuery(nextLocation, 'reportId', result.report_id);
+    }
+    if (result.workflow_id) {
+      nextLocation = withQuery(nextLocation, 'workflowId', result.workflow_id);
+    }
   } catch (error) {
     nextLocation = withQuery(redirectTo, 'error', toMessage(error));
   }
