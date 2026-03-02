@@ -14,6 +14,12 @@ const NAV_ITEMS = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const isStandaloneEditorRoute =
+    pathname === '/knowledge/notes/new' || /^\/knowledge\/notes\/[^/]+\/edit$/.test(pathname);
+
+  if (isStandaloneEditorRoute) {
+    return <main className="content-wrap content-wrap-fullscreen">{children}</main>;
+  }
 
   return (
     <div className="app-frame">

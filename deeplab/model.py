@@ -565,6 +565,66 @@ class KnowledgeExtractionRun(Model):
         ordering = ["-updated_at", "-started_at"]
 
 
+class KnowledgeNote(Model):
+    id = fields.UUIDField(pk=True, description="Knowledge note ID")
+    title = fields.TextField(description="Note title")
+    content_json = fields.JSONField(
+        default=dict,
+        description="TipTap JSON document",
+    )
+    plain_text = fields.TextField(
+        default="",
+        description="Plain text projection for search/snippet",
+    )
+    created_by = fields.CharField(
+        max_length=64,
+        description="Creator source: user/agent/system",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        index=True,
+    )
+    updated_at = fields.DatetimeField(
+        auto_now=True,
+        index=True,
+    )
+
+    class Meta:
+        table = "knowledge_notes"
+        ordering = ["-updated_at", "-created_at"]
+
+
+class KnowledgeNoteLink(Model):
+    id = fields.UUIDField(pk=True, description="Knowledge note backlink relation ID")
+    source_note = fields.ForeignKeyField(
+        "models.KnowledgeNote",
+        related_name="links",
+    )
+    target_type = fields.CharField(
+        max_length=16,
+        index=True,
+        description="Link target type: paper/question/note",
+    )
+    target_id = fields.CharField(
+        max_length=128,
+        description="Link target id",
+    )
+    target_label = fields.TextField(
+        null=True,
+        description="Display label for the target at save time",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        index=True,
+    )
+
+    class Meta:
+        table = "knowledge_note_links"
+        ordering = ["-created_at"]
+        unique_together = (("source_note", "target_type", "target_id"),)
+        indexes = (("target_type", "target_id"),)
+
+
 class RuntimeSetting(Model):
     key = fields.CharField(max_length=128, pk=True, description="Runtime setting key")
     value = fields.TextField(default="", description="Runtime setting value")

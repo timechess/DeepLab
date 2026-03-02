@@ -2,8 +2,12 @@ import { z } from 'zod';
 
 import {
   createKnowledgeQuestionResultSchema,
+  deleteKnowledgeNoteResultSchema,
   deleteKnowledgeQuestionResultSchema,
   filterResultSchema,
+  knowledgeLinkTargetSchema,
+  knowledgeNoteDetailSchema,
+  knowledgeNoteSummarySchema,
   knowledgeQuestionDetailSchema,
   knowledgeQuestionSummarySchema,
   readByArxivIdResultSchema,
@@ -18,6 +22,9 @@ import {
   type DeleteKnowledgeQuestionResult,
   type ReadByArxivIdResult,
   type FilterResult,
+  type KnowledgeLinkTarget,
+  type KnowledgeNoteDetail,
+  type KnowledgeNoteSummary,
   type KnowledgeQuestionDetail,
   type KnowledgeQuestionSummary,
   type ReadResult,
@@ -27,6 +34,7 @@ import {
   type TriggerKnowledgeExtractionResult,
   type TriggerResponse,
   type UpdateKnowledgeQuestionResult,
+  type DeleteKnowledgeNoteResult,
   type WorkflowRun,
   type WorkflowRunDetail,
   workflowRunDetailSchema,
@@ -347,5 +355,81 @@ export function deleteKnowledgeQuestion(
   return backendFetch<DeleteKnowledgeQuestionResult>(`/knowledge/questions/${questionId}`, {
     method: 'DELETE',
     schema: deleteKnowledgeQuestionResultSchema,
+  });
+}
+
+export function getKnowledgeNotes({
+  search,
+  limit = 20,
+}: {
+  search?: string;
+  limit?: number;
+} = {}): Promise<KnowledgeNoteSummary[]> {
+  return backendFetch<KnowledgeNoteSummary[]>('/knowledge/notes', {
+    query: { search, limit },
+    schema: z.array(knowledgeNoteSummarySchema),
+  });
+}
+
+export function getKnowledgeNote(noteId: string): Promise<KnowledgeNoteDetail> {
+  return backendFetch<KnowledgeNoteDetail>(`/knowledge/notes/${noteId}`, {
+    schema: knowledgeNoteDetailSchema,
+  });
+}
+
+export function createKnowledgeNote(payload: {
+  title?: string;
+  contentJson?: Record<string, unknown>;
+  createdBy?: string;
+}): Promise<KnowledgeNoteDetail> {
+  return backendFetch<KnowledgeNoteDetail>('/knowledge/notes', {
+    method: 'POST',
+    schema: knowledgeNoteDetailSchema,
+    body: payload,
+  });
+}
+
+export function updateKnowledgeNote(
+  noteId: string,
+  payload: {
+    title?: string;
+    contentJson?: Record<string, unknown>;
+  },
+): Promise<KnowledgeNoteDetail> {
+  return backendFetch<KnowledgeNoteDetail>(`/knowledge/notes/${noteId}`, {
+    method: 'PATCH',
+    schema: knowledgeNoteDetailSchema,
+    body: payload,
+  });
+}
+
+export function deleteKnowledgeNote(
+  noteId: string,
+): Promise<DeleteKnowledgeNoteResult> {
+  return backendFetch<DeleteKnowledgeNoteResult>(`/knowledge/notes/${noteId}`, {
+    method: 'DELETE',
+    schema: deleteKnowledgeNoteResultSchema,
+  });
+}
+
+export function searchKnowledgeLinkTargets({
+  type,
+  q,
+  limit = 10,
+  excludeNoteId,
+}: {
+  type: 'paper' | 'question' | 'note';
+  q?: string;
+  limit?: number;
+  excludeNoteId?: string;
+}): Promise<KnowledgeLinkTarget[]> {
+  return backendFetch<KnowledgeLinkTarget[]>('/knowledge/link-targets', {
+    query: {
+      type,
+      q,
+      limit,
+      exclude_note_id: excludeNoteId,
+    },
+    schema: z.array(knowledgeLinkTargetSchema),
   });
 }

@@ -132,6 +132,45 @@ export const knowledgeQuestionDetailSchema = knowledgeQuestionSummarySchema.exte
   solutions: z.array(knowledgeSolutionSchema),
 });
 
+export const knowledgeLinkTargetTypeSchema = z.enum(['paper', 'question', 'note']);
+
+export const knowledgeNoteLinkSchema = z.object({
+  id: z.string().uuid(),
+  sourceNoteId: z.string().uuid(),
+  targetType: knowledgeLinkTargetTypeSchema,
+  targetId: z.string(),
+  targetLabel: z.string().nullable(),
+  readingReportId: z.string().uuid().nullable().optional(),
+  createdAt: z.string(),
+  sourceNoteTitle: z.string().optional(),
+  sourceNoteUpdatedAt: z.string().optional(),
+});
+
+export const knowledgeNoteSummarySchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  excerpt: z.string(),
+  plainText: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  outgoingLinkCount: z.number().int(),
+  incomingLinkCount: z.number().int(),
+});
+
+export const knowledgeNoteDetailSchema = knowledgeNoteSummarySchema.extend({
+  contentJson: z.record(z.unknown()),
+  outgoingLinks: z.array(knowledgeNoteLinkSchema),
+  incomingLinks: z.array(knowledgeNoteLinkSchema),
+});
+
+export const knowledgeLinkTargetSchema = z.object({
+  type: knowledgeLinkTargetTypeSchema,
+  id: z.string(),
+  label: z.string(),
+  subtitle: z.string().optional(),
+});
+
 export const triggerKnowledgeExtractionResultSchema = z.object({
   runId: z.string().uuid(),
   status: z.enum(['running', 'succeeded', 'failed']),
@@ -160,6 +199,13 @@ export const deleteKnowledgeQuestionResultSchema = z.object({
   deleted: z.boolean(),
   questionId: z.string().uuid(),
   deletedSolutions: z.number().int(),
+});
+
+export const deleteKnowledgeNoteResultSchema = z.object({
+  deleted: z.boolean(),
+  noteId: z.string().uuid(),
+  deletedOutgoingLinks: z.number().int(),
+  deletedIncomingLinks: z.number().int(),
 });
 
 export const triggerResponseSchema = z.object({
@@ -230,7 +276,12 @@ export type ReadByArxivIdResult = z.infer<typeof readByArxivIdResultSchema>;
 export type KnowledgeQuestionSummary = z.infer<typeof knowledgeQuestionSummarySchema>;
 export type KnowledgeQuestionDetail = z.infer<typeof knowledgeQuestionDetailSchema>;
 export type KnowledgeSolution = z.infer<typeof knowledgeSolutionSchema>;
+export type KnowledgeNoteLink = z.infer<typeof knowledgeNoteLinkSchema>;
+export type KnowledgeNoteSummary = z.infer<typeof knowledgeNoteSummarySchema>;
+export type KnowledgeNoteDetail = z.infer<typeof knowledgeNoteDetailSchema>;
+export type KnowledgeLinkTarget = z.infer<typeof knowledgeLinkTargetSchema>;
 export type TriggerKnowledgeExtractionResult = z.infer<typeof triggerKnowledgeExtractionResultSchema>;
 export type CreateKnowledgeQuestionResult = z.infer<typeof createKnowledgeQuestionResultSchema>;
 export type UpdateKnowledgeQuestionResult = z.infer<typeof updateKnowledgeQuestionResultSchema>;
 export type DeleteKnowledgeQuestionResult = z.infer<typeof deleteKnowledgeQuestionResultSchema>;
+export type DeleteKnowledgeNoteResult = z.infer<typeof deleteKnowledgeNoteResultSchema>;
