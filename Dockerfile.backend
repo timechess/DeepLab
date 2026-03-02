@@ -3,7 +3,8 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    FASTEMBED_CACHE_PATH=/app/persist/fastembed
 
 WORKDIR /app
 
@@ -12,6 +13,7 @@ COPY deeplab ./deeplab
 COPY scripts ./scripts
 
 RUN uv sync --frozen --no-dev
+RUN mkdir -p /app/persist/fastembed
 
 EXPOSE 8000
 

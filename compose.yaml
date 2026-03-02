@@ -34,8 +34,11 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8000
       APP_RELOAD: "0"
+      FASTEMBED_CACHE_PATH: /app/persist/fastembed
     ports:
       - 8000:8000
+    volumes:
+      - ./persist/fastembed:/app/persist/fastembed
     restart: unless-stopped
 
   frontend:

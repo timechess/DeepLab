@@ -28,6 +28,21 @@ from deeplab.daily_papers.paper_reading import (
     normalize_stage2_markdown_text,
     run_paper_reading,
 )
+from deeplab.knowledge_base.embedding import (
+    get_embedding_download_status,
+    set_embedding_model_name,
+    start_embedding_download,
+    sync_embedding_model_from_runtime_settings,
+)
+from deeplab.knowledge_base.service import (
+    create_manual_knowledge_question,
+    delete_knowledge_question,
+    get_knowledge_question_detail,
+    get_reading_report_knowledge_payload,
+    list_knowledge_questions,
+    trigger_report_knowledge_extraction,
+    update_knowledge_question,
+)
 from deeplab.model import (
     Paper,
     PaperFilteringRun,
@@ -787,6 +802,17 @@ class RuntimeSettingUpdateRequest(BaseModel):
     value: str = ""
 
 
+class KnowledgeQuestionCreateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    question: str = Field(min_length=1)
+    created_by: str = Field(default="user", alias="createdBy", min_length=1, max_length=64)
+
+
+class KnowledgeQuestionUpdateRequest(BaseModel):
+    question: str = Field(min_length=1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with RegisterTortoise(
@@ -898,10 +924,21 @@ async def update_runtime_setting(
         raise HTTPException(status_code=404, detail="Runtime setting key not found")
 
     value = payload.value
+    if normalized_key == "knowledge_embedding_model":
+        try:
+            set_embedding_model_name(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     setting, _ = await RuntimeSetting.update_or_create(
         key=normalized_key,
         defaults={"value": value},
     )
+    if normalized_key == "knowledge_embedding_model":
+        try:
+            await sync_embedding_model_from_runtime_settings()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _runtime_setting_to_dict(normalized_key, setting)
 
 
@@ -911,7 +948,19 @@ async def delete_runtime_setting(key: str) -> dict[str, Any]:
     if not is_runtime_setting_key_supported(normalized_key):
         raise HTTPException(status_code=404, detail="Runtime setting key not found")
 
+    if normalized_key == "knowledge_embedding_model":
+        fallback_model = default_runtime_setting_value(normalized_key)
+        try:
+            set_embedding_model_name(fallback_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     await RuntimeSetting.filter(key=normalized_key).delete()
+    if normalized_key == "knowledge_embedding_model":
+        try:
+            await sync_embedding_model_from_runtime_settings()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"deleted": True}
 
 
@@ -1124,7 +1173,9 @@ async def get_reading_report(report_id: str) -> dict[str, Any]:
     )
     if report is None:
         raise HTTPException(status_code=404, detail="Reading report not found")
-    return _reading_report_to_dict(report, include_full=True)
+    data = _reading_report_to_dict(report, include_full=True)
+    data.update(await get_reading_report_knowledge_payload(report))
+    return data
 
 
 @app.patch("/reading_reports/{report_id}/comment")
@@ -1148,6 +1199,135 @@ async def update_reading_report_comment(
         .first()
     )
     return _reading_report_to_dict(report, include_full=False) if report else {"id": report_id}
+
+
+@app.post("/knowledge/reports/{report_id}/extract")
+async def extract_knowledge_by_report(report_id: str) -> dict[str, Any]:
+    try:
+        report_uuid = uuid.UUID(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid report_id") from exc
+
+    try:
+        return await trigger_report_knowledge_extraction(report_uuid)
+    except ValueError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail="Reading report not found") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Knowledge extraction failed, report_id=%s", report_id)
+        raise HTTPException(status_code=500, detail="Failed to extract knowledge") from exc
+
+
+@app.get("/knowledge/embedding/status")
+async def get_knowledge_embedding_status_api() -> dict[str, Any]:
+    try:
+        await sync_embedding_model_from_runtime_settings()
+        return get_embedding_download_status()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Get knowledge embedding status failed")
+        raise HTTPException(status_code=500, detail="Failed to get embedding status") from exc
+
+
+@app.post("/knowledge/embedding/download")
+async def start_knowledge_embedding_download_api() -> dict[str, Any]:
+    try:
+        await sync_embedding_model_from_runtime_settings()
+        return start_embedding_download()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Start knowledge embedding download failed")
+        raise HTTPException(status_code=500, detail="Failed to start embedding download") from exc
+
+
+@app.get("/knowledge/questions")
+async def list_knowledge_questions_api(
+    limit: int = 20,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        return await list_knowledge_questions(search=search, limit=limit)
+    except Exception as exc:
+        logger.exception("List knowledge questions failed")
+        raise HTTPException(status_code=500, detail="Failed to list knowledge questions") from exc
+
+
+@app.post("/knowledge/questions")
+async def create_knowledge_question_api(payload: KnowledgeQuestionCreateRequest) -> dict[str, Any]:
+    try:
+        return await create_manual_knowledge_question(
+            question_text=payload.question,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Create knowledge question failed")
+        raise HTTPException(status_code=500, detail="Failed to create knowledge question") from exc
+
+
+@app.patch("/knowledge/questions/{question_id}")
+async def update_knowledge_question_api(
+    question_id: str, payload: KnowledgeQuestionUpdateRequest
+) -> dict[str, Any]:
+    try:
+        question_uuid = uuid.UUID(question_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid question_id") from exc
+
+    try:
+        result = await update_knowledge_question(
+            question_id=question_uuid,
+            question_text=payload.question,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Update knowledge question failed, question_id=%s", question_id)
+        raise HTTPException(status_code=500, detail="Failed to update knowledge question") from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge question not found")
+    return result
+
+
+@app.delete("/knowledge/questions/{question_id}")
+async def delete_knowledge_question_api(question_id: str) -> dict[str, Any]:
+    try:
+        question_uuid = uuid.UUID(question_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid question_id") from exc
+
+    try:
+        result = await delete_knowledge_question(question_id=question_uuid)
+    except Exception as exc:
+        logger.exception("Delete knowledge question failed, question_id=%s", question_id)
+        raise HTTPException(status_code=500, detail="Failed to delete knowledge question") from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge question not found")
+    return result
+
+
+@app.get("/knowledge/questions/{question_id}")
+async def get_knowledge_question_detail_api(question_id: str) -> dict[str, Any]:
+    try:
+        question_uuid = uuid.UUID(question_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid question_id") from exc
+
+    try:
+        data = await get_knowledge_question_detail(question_uuid)
+    except Exception as exc:
+        logger.exception("Get knowledge question detail failed, question_id=%s", question_id)
+        raise HTTPException(status_code=500, detail="Failed to get knowledge question detail") from exc
+
+    if data is None:
+        raise HTTPException(status_code=404, detail="Knowledge question not found")
+    return data
 
 
 @app.get("/workflow_runs")

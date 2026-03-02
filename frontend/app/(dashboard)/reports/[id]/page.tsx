@@ -1,5 +1,8 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+import { triggerKnowledgeExtractionAction } from '@/app/actions';
+import { KnowledgeExtractionTrigger } from '@/components/reports/knowledge-extraction-trigger';
 import { CommentEditor } from '@/components/reports/comment-editor';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { getReadingReport } from '@/lib/api/client';
@@ -90,6 +93,22 @@ function toArxivUrl(primary: string | null | undefined, fallback: string): strin
   return null;
 }
 
+function formatKnowledgeStatus(value: string): string {
+  if (value === 'not_started') {
+    return '未触发';
+  }
+  if (value === 'running') {
+    return '进行中';
+  }
+  if (value === 'succeeded') {
+    return '成功';
+  }
+  if (value === 'failed') {
+    return '失败';
+  }
+  return value || '未知';
+}
+
 export default async function ReportDetailPage({
   params,
   searchParams,
@@ -115,6 +134,20 @@ export default async function ReportDetailPage({
   const hasAbstract = Boolean(paperMeta?.summary?.trim() || paperMeta?.aiSummary?.trim());
   const arxivUrl = toArxivUrl(paperMeta?.id, report.paperId);
   const githubUrl = toGitHubUrl(paperMeta?.githubRepo);
+  const extractionState = report.knowledgeExtraction ?? {
+    runId: null,
+    status: 'not_started',
+    locked: false,
+    attemptCount: 0,
+    errorMessage: null,
+    startedAt: null,
+    finishedAt: null,
+    questionIds: [],
+  };
+  const extractionAction = triggerKnowledgeExtractionAction.bind(null, report.id);
+  const knowledgeQuestions = report.knowledgeQuestions ?? [];
+  const extractionFinished = extractionState.status === 'succeeded' || extractionState.locked;
+  const extractionRunning = extractionState.status === 'running';
 
   return (
     <section className="page">
@@ -242,6 +275,83 @@ export default async function ReportDetailPage({
         <h2 className="panel-title">报告正文</h2>
         <div style={{ marginTop: 14 }}>
           <MarkdownRenderer content={report.stage2Content} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <p className="panel-kicker">知识提炼</p>
+        <h2 className="panel-title">问题-方案-文献结构化沉淀</h2>
+        <div className="meta-kv-grid" style={{ marginTop: 12 }}>
+          <div className="meta-kv">
+            <span>状态</span>
+            <strong>{formatKnowledgeStatus(extractionState.status)}</strong>
+          </div>
+          <div className="meta-kv">
+            <span>尝试次数</span>
+            <strong>{extractionState.attemptCount}</strong>
+          </div>
+          <div className="meta-kv">
+            <span>运行编号</span>
+            <strong>{extractionState.runId || '--'}</strong>
+          </div>
+          <div className="meta-kv">
+            <span>完成时间</span>
+            <strong>
+              {extractionState.finishedAt ? formatDateTime(extractionState.finishedAt) : '--'}
+            </strong>
+          </div>
+        </div>
+
+        {extractionState.status !== 'not_started' ? (
+          <div style={{ marginTop: 10 }}>
+            <StatusBadge status={extractionState.status} />
+          </div>
+        ) : null}
+
+        {extractionState.errorMessage ? (
+          <p className="notice notice-error" style={{ marginTop: 10 }}>
+            {extractionState.errorMessage}
+          </p>
+        ) : null}
+
+        <KnowledgeExtractionTrigger
+          action={extractionAction}
+          extractionFinished={extractionFinished}
+          extractionRunning={extractionRunning}
+          reportId={report.id}
+        />
+        <p className="page-subtitle" style={{ marginTop: 10 }}>
+          知识提炼依赖本地 embedding 模型。若触发时报“模型未下载”，请先前往{' '}
+          <Link className="code-link" href="/ops/settings">
+            系统设置
+          </Link>{' '}
+          下载模型后再重试。
+        </p>
+
+        <div style={{ marginTop: 14 }}>
+          <h3 className="panel-title" style={{ fontSize: 20 }}>
+            本报告关联问题（{knowledgeQuestions.length}）
+          </h3>
+          <ul className="panel-list" style={{ marginTop: 10 }}>
+            {knowledgeQuestions.length > 0 ? (
+              knowledgeQuestions.map((item) => (
+                <li className="panel-list-item" key={item.id}>
+                  <p className="mono-id">{item.id}</p>
+                  <p style={{ margin: '6px 0 10px' }}>{item.question}</p>
+                  <div className="toolbar">
+                    <span className="page-subtitle">方案数 {item.solutionCount}</span>
+                    <Link className="button button-secondary" href={`/knowledge/${item.id}`}>
+                      查看问题详情
+                    </Link>
+                  </div>
+                </li>
+              ))
+            ) : (
+              <li className="panel-list-item">
+                <p className="page-subtitle">尚未关联知识库问题。</p>
+              </li>
+            )}
+          </ul>
         </div>
       </section>
     </section>

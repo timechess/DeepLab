@@ -80,6 +80,86 @@ export const readingReportSchema = z.object({
   updatedAt: z.string(),
   paperMeta: paperMetaSchema.nullable().optional(),
   fullReport: z.string().optional(),
+  knowledgeExtraction: z
+    .object({
+      runId: z.string().uuid().nullable(),
+      status: z.enum(['not_started', 'running', 'succeeded', 'failed']),
+      locked: z.boolean(),
+      attemptCount: z.number().int(),
+      errorMessage: z.string().nullable(),
+      startedAt: z.string().nullable(),
+      finishedAt: z.string().nullable(),
+      questionIds: z.array(z.string()),
+    })
+    .optional(),
+  knowledgeQuestions: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        question: z.string(),
+        createdBy: z.string(),
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        solutionCount: z.number().int(),
+      }),
+    )
+    .optional(),
+});
+
+export const knowledgeQuestionSummarySchema = z.object({
+  id: z.string().uuid(),
+  question: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  solutionCount: z.number().int(),
+});
+
+export const knowledgeSolutionSchema = z.object({
+  id: z.string().uuid(),
+  questionId: z.string().uuid(),
+  paperId: z.string(),
+  paperTitle: z.string().nullable(),
+  reportId: z.string().uuid().nullable(),
+  methodSummary: z.string(),
+  effectSummary: z.string(),
+  limitations: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const knowledgeQuestionDetailSchema = knowledgeQuestionSummarySchema.extend({
+  solutions: z.array(knowledgeSolutionSchema),
+});
+
+export const triggerKnowledgeExtractionResultSchema = z.object({
+  runId: z.string().uuid(),
+  status: z.enum(['running', 'succeeded', 'failed']),
+  locked: z.boolean(),
+  attemptCount: z.number().int(),
+  questionIds: z.array(z.string()),
+  errorMessage: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  deduplicated: z.boolean(),
+  message: z.string(),
+});
+
+export const createKnowledgeQuestionResultSchema = z.object({
+  questionId: z.string().uuid(),
+  deduplicated: z.boolean(),
+  question: knowledgeQuestionSummarySchema,
+});
+
+export const updateKnowledgeQuestionResultSchema = z.object({
+  questionId: z.string().uuid(),
+  question: knowledgeQuestionSummarySchema,
+});
+
+export const deleteKnowledgeQuestionResultSchema = z.object({
+  deleted: z.boolean(),
+  questionId: z.string().uuid(),
+  deletedSolutions: z.number().int(),
 });
 
 export const triggerResponseSchema = z.object({
@@ -147,3 +227,10 @@ export type TriggerResponse = z.infer<typeof triggerResponseSchema>;
 export type FilterResult = z.infer<typeof filterResultSchema>;
 export type ReadResult = z.infer<typeof readResultSchema>;
 export type ReadByArxivIdResult = z.infer<typeof readByArxivIdResultSchema>;
+export type KnowledgeQuestionSummary = z.infer<typeof knowledgeQuestionSummarySchema>;
+export type KnowledgeQuestionDetail = z.infer<typeof knowledgeQuestionDetailSchema>;
+export type KnowledgeSolution = z.infer<typeof knowledgeSolutionSchema>;
+export type TriggerKnowledgeExtractionResult = z.infer<typeof triggerKnowledgeExtractionResultSchema>;
+export type CreateKnowledgeQuestionResult = z.infer<typeof createKnowledgeQuestionResultSchema>;
+export type UpdateKnowledgeQuestionResult = z.infer<typeof updateKnowledgeQuestionResultSchema>;
+export type DeleteKnowledgeQuestionResult = z.infer<typeof deleteKnowledgeQuestionResultSchema>;

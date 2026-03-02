@@ -4,15 +4,19 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 
 import {
+  createKnowledgeQuestion,
   createScreeningRule,
+  deleteKnowledgeQuestion,
   deleteRuntimeSetting,
   deleteScreeningRule,
   getRuntimeSettings,
   triggerDailyWorkflow,
   triggerFetchPapers,
   triggerFilterPapers,
+  triggerKnowledgeExtraction,
   triggerReadPaperByArxivId,
   triggerReadPapers,
+  updateKnowledgeQuestion,
   updateRuntimeSetting,
   updateReadingReportComment,
   updateScreeningRule,
@@ -52,6 +56,28 @@ export async function updateReportCommentAction(reportId: string, formData: Form
     nextLocation = withQuery(redirectTo, 'notice', '评论已更新');
   } catch (error) {
     nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function triggerKnowledgeExtractionAction(reportId: string, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), `/reports/${reportId}`);
+  let nextLocation: string;
+
+  try {
+    const result = await triggerKnowledgeExtraction(reportId);
+    revalidatePath('/');
+    revalidatePath('/knowledge');
+    revalidatePath(`/reports/${reportId}`);
+    for (const questionId of result.questionIds) {
+      revalidatePath(`/knowledge/${questionId}`);
+    }
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'notice', result.message);
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'error', toMessage(error));
   }
 
   redirect(nextLocation);
@@ -260,6 +286,79 @@ export async function refreshRuntimeSettingsAction(formData: FormData) {
     nextLocation = withQuery(redirectTo, 'notice', '配置已刷新');
   } catch (error) {
     nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function createKnowledgeQuestionAction(formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/knowledge');
+  const question = String(formData.get('question') ?? '').trim();
+  let nextLocation: string;
+
+  if (!question) {
+    nextLocation = withQuery(redirectTo, 'error', '问题不能为空。');
+    redirect(nextLocation);
+  }
+
+  try {
+    const result = await createKnowledgeQuestion({ question, createdBy: 'user' });
+    revalidatePath('/knowledge');
+    revalidatePath(`/knowledge/${result.questionId}`);
+    nextLocation = withQuery(
+      redirectTo,
+      'notice',
+      result.deduplicated ? '问题已存在，已返回已有问题。' : '问题已创建。',
+    );
+    nextLocation = withQuery(nextLocation, 'questionId', result.questionId);
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function updateKnowledgeQuestionAction(questionId: string, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), `/knowledge/${questionId}`);
+  const question = String(formData.get('question') ?? '').trim();
+  let nextLocation: string;
+
+  if (!question) {
+    nextLocation = withQuery(redirectTo, 'error', '问题不能为空。');
+    redirect(nextLocation);
+  }
+
+  try {
+    await updateKnowledgeQuestion(questionId, { question });
+    revalidatePath('/knowledge');
+    revalidatePath(`/knowledge/${questionId}`);
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'notice', '问题已更新。');
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function deleteKnowledgeQuestionAction(questionId: string, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/knowledge');
+  let nextLocation: string;
+
+  try {
+    const result = await deleteKnowledgeQuestion(questionId);
+    revalidatePath('/knowledge');
+    revalidatePath(`/knowledge/${questionId}`);
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(
+      nextLocation,
+      'notice',
+      `问题已删除，同时删除方案 ${result.deletedSolutions} 条。`,
+    );
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'error', toMessage(error));
   }
 
   redirect(nextLocation);

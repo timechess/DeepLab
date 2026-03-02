@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
   { href: '/', label: '首页总览' },
+  { href: '/knowledge', label: '知识库' },
   { href: '/ops/workflows', label: '工作流' },
   { href: '/ops/rules', label: '筛选规则' },
   { href: '/ops/reports', label: '报告管理' },

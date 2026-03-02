@@ -8,6 +8,10 @@ DEFAULT_GOOGLE_GENAI_MODEL = "gemini-3-flash-preview"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MISTRAL_BASE_URL = "https://api.mistral.ai"
 DEFAULT_MISTRAL_OCR_MODEL = "mistral-ocr-latest"
+DEFAULT_KNOWLEDGE_EMBEDDING_MODEL = os.getenv(
+    "KNOWLEDGE_EMBEDDING_MODEL",
+    "BAAI/bge-small-en-v1.5",
+)
 DEFAULT_INITIAL_SCREENING_TEMPERATURE = "1"
 DEFAULT_READING_STAGE1_TEMPERATURE = "1"
 DEFAULT_READING_STAGE2_TEMPERATURE = "1"
@@ -158,6 +162,114 @@ DEFAULT_READING_STAGE2_USER_PROMPT_TEMPLATE = """
 2. 不要再使用 ```markdown 代码围栏包裹整篇报告。
 """.strip()
 
+DEFAULT_KNOWLEDGE_CANDIDATE_SYSTEM_PROMPT = (
+    "你是科研知识库中的“研究问题抽象器”。"
+    "你的目标是抽取可复用、可跨论文比较的研究问题，而不是复述某篇论文的具体解法。"
+    "你必须优先保证问题质量，宁缺毋滥，不要凑数量。"
+    "输出必须是 XML，且每个问题必须放在独立的 <question> 标签中。"
+)
+
+DEFAULT_KNOWLEDGE_CANDIDATE_USER_PROMPT_TEMPLATE = """
+你将收到论文元信息与第二阶段完整精读报告（full report）。
+请基于这些输入提炼高质量研究问题，输出 1-5 个即可；不要刻意凑满 5 个。
+
+【高质量研究问题标准】
+1. 问题应描述“研究目标/关键矛盾/核心约束”，而不是预设某个具体解法。
+2. 问题应可跨论文复用，能支持后续比较不同方法。
+3. 问题应语义自洽，脱离原论文也能被理解。
+4. 问题应具备研究价值（可验证、可比较、可被多种方法回答）。
+
+【严格禁止】
+1. 把方法直接写进问题（例如“如何引入X作为先验”“如何用Y模块解决Z”）。
+2. 把实现细节、参数技巧、训练技巧当作问题主体。
+3. 直接使用论文私有名词却不解释其含义。
+
+【反例与改写参考】
+反例1（方法代入问题）：
+在潜空间推理中，如何引入跨模态特征（如视觉语义）作为先验引导，以缓解连续向量演化过程中的语义漂移问题？
+改写方向：
+在连续潜空间推理过程中，如何稳定保持语义一致性并减少语义漂移？
+
+反例2（私有概念未解释）：
+模型内部特征空间的“推理偏移”（Reasoning Shift）是否可以作为通用的对齐目标，用于将复杂的逻辑处理能力迁移至紧凑的隐藏层表示中？
+改写方向：
+模型内部特征表示与显式推理结果之间的偏移，是否可以作为通用对齐信号以提升推理能力迁移？
+
+【输出要求】
+1. 只输出 XML，不要输出任何解释性文字。
+2. 每个问题必须放在独立 <question> 标签中。
+3. 允许输出少量高质量问题，不强求数量。
+
+【Paper Meta】
+paper_id: {{PAPER_ID}}
+title: {{PAPER_TITLE}}
+authors: {{PAPER_AUTHORS}}
+organization: {{PAPER_ORGANIZATION}}
+keywords: {{PAPER_KEYWORDS}}
+
+【Full Report】
+{{FULL_REPORT}}
+
+严格使用以下格式：
+<question_candidates>
+  <question>问题1</question>
+  <question>问题2</question>
+</question_candidates>
+""".strip()
+
+DEFAULT_KNOWLEDGE_FINAL_SYSTEM_PROMPT = (
+    "你是科研知识库的“问题编辑与合并决策助手”。"
+    "你会拿到候选问题与向量召回到的已有问题。"
+    "你可以重写问题表述，并决定复用已有问题或新建问题。"
+    "你必须输出最终问题集 XML。"
+)
+
+DEFAULT_KNOWLEDGE_FINAL_USER_PROMPT_TEMPLATE = """
+请根据输入信息输出最终问题集。
+注意：不要依赖固定相似度阈值，请根据语义一致性与问题质量自主决策。
+
+【Paper Meta】
+paper_id: {{PAPER_ID}}
+title: {{PAPER_TITLE}}
+authors: {{PAPER_AUTHORS}}
+organization: {{PAPER_ORGANIZATION}}
+keywords: {{PAPER_KEYWORDS}}
+
+【候选问题 XML】
+{{CANDIDATE_XML}}
+
+【向量召回候选（仅供参考）】
+{{RECALL_CONTEXT}}
+
+【决策与编辑原则】
+1. 你有权修改候选问题的表述，使其更通用、更清晰、更适合作为知识库标准问题。
+2. 你可以合并语义重复候选，也可以丢弃低质量候选。
+3. 仅保留高质量问题，输出 1-5 个即可，不要刻意凑满。
+4. 禁止把具体解法写进问题；问题应描述目标/矛盾/约束，而非实现步骤。
+5. 避免未解释的论文私有概念；如必须提及，应改写为可自解释的通用描述。
+
+输出要求：
+1. 每个最终问题放在独立 <question> 中。
+2. action 只能是 reuse 或 create。
+3. action=reuse 时必须给出 target_question_id（来自召回候选）。
+4. text 字段应为你最终确认后的标准问题表述（可与候选原文不同）。
+5. method_summary/effect_summary/limitations 必须简洁明确。
+6. method_summary 不得直接把 text 改写成实施步骤；应概括“可行思路类别”。
+7. 只输出 XML，不要输出其他文字。
+
+格式如下：
+<final_question_set>
+  <question>
+    <action>reuse|create</action>
+    <target_question_id>uuid-or-empty</target_question_id>
+    <text>...</text>
+    <method_summary>...</method_summary>
+    <effect_summary>...</effect_summary>
+    <limitations>...</limitations>
+  </question>
+</final_question_set>
+""".strip()
+
 RUNTIME_SETTING_SPECS: dict[str, dict[str, Any]] = {
     "llm_provider": {
         "label": "LLM Provider",
@@ -207,6 +319,12 @@ RUNTIME_SETTING_SPECS: dict[str, dict[str, Any]] = {
         "is_secret": False,
         "default": "",
     },
+    "knowledge_embedding_model": {
+        "label": "Knowledge Embedding Model",
+        "description": "知识库向量化模型（fastembed 支持的模型名）。例如 BAAI/bge-small-en-v1.5。",
+        "is_secret": False,
+        "default": DEFAULT_KNOWLEDGE_EMBEDDING_MODEL,
+    },
     "initial_screening_temperature": {
         "label": "初筛 Temperature",
         "description": "初筛阶段温度，建议范围 0-2。",
@@ -255,6 +373,30 @@ RUNTIME_SETTING_SPECS: dict[str, dict[str, Any]] = {
         "is_secret": False,
         "default": DEFAULT_READING_STAGE2_USER_PROMPT_TEMPLATE,
     },
+    "knowledge_candidate_system_prompt": {
+        "label": "知识库候选问题 System Prompt",
+        "description": "知识库提炼阶段1（候选问题提炼）系统提示词。",
+        "is_secret": False,
+        "default": DEFAULT_KNOWLEDGE_CANDIDATE_SYSTEM_PROMPT,
+    },
+    "knowledge_candidate_user_prompt_template": {
+        "label": "知识库候选问题 User Prompt 模板",
+        "description": "支持占位符：{{PAPER_ID}} {{PAPER_TITLE}} {{PAPER_AUTHORS}} {{PAPER_ORGANIZATION}} {{PAPER_KEYWORDS}} {{FULL_REPORT}}。",
+        "is_secret": False,
+        "default": DEFAULT_KNOWLEDGE_CANDIDATE_USER_PROMPT_TEMPLATE,
+    },
+    "knowledge_final_system_prompt": {
+        "label": "知识库最终问题集 System Prompt",
+        "description": "知识库提炼阶段2（最终问题集决策）系统提示词。",
+        "is_secret": False,
+        "default": DEFAULT_KNOWLEDGE_FINAL_SYSTEM_PROMPT,
+    },
+    "knowledge_final_user_prompt_template": {
+        "label": "知识库最终问题集 User Prompt 模板",
+        "description": "支持占位符：{{PAPER_ID}} {{PAPER_TITLE}} {{PAPER_AUTHORS}} {{PAPER_ORGANIZATION}} {{PAPER_KEYWORDS}} {{CANDIDATE_XML}} {{RECALL_CONTEXT}}。",
+        "is_secret": False,
+        "default": DEFAULT_KNOWLEDGE_FINAL_USER_PROMPT_TEMPLATE,
+    },
     "reading_stage2_temperature": {
         "label": "精读阶段2 Temperature",
         "description": "精读第二阶段温度，建议范围 0-2。",
@@ -289,6 +431,10 @@ GOOGLE_THINKING_LEVEL_ENV_KEYS = ("google_thinking_level", "GOOGLE_THINKING_LEVE
 OPENAI_API_KEY_ENV_KEYS = ("openai_api_key", "OPENAI_API_KEY")
 OPENAI_BASE_URL_ENV_KEYS = ("openai_base_url", "OPENAI_BASE_URL")
 OPENAI_MODEL_ENV_KEYS = ("openai_model", "OPENAI_MODEL")
+KNOWLEDGE_EMBEDDING_MODEL_ENV_KEYS = (
+    "knowledge_embedding_model",
+    "KNOWLEDGE_EMBEDDING_MODEL",
+)
 INITIAL_SCREENING_TEMPERATURE_ENV_KEYS = (
     "initial_screening_temperature",
     "INITIAL_SCREENING_TEMPERATURE",

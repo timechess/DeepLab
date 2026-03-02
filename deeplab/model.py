@@ -429,6 +429,142 @@ class PaperReadingReport(Model):
         unique_together = (("reading_run", "paper"),)
 
 
+class KnowledgeQuestion(Model):
+    id = fields.UUIDField(pk=True, description="Knowledge question ID")
+    question = fields.TextField(description="Canonical research question")
+    fingerprint = fields.CharField(
+        max_length=128,
+        index=True,
+        unique=True,
+        description="Normalized question fingerprint for exact deduplication",
+    )
+    embedding = fields.JSONField(
+        default=list,
+        description="Normalized embedding vector for retrieval",
+    )
+    embedding_model = fields.CharField(
+        max_length=128,
+        source_field="embeddingModel",
+        description="Embedding model identifier",
+    )
+    created_by = fields.CharField(
+        max_length=64,
+        source_field="createdBy",
+        description="Creator source: user/agent/system",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="createdAt",
+        index=True,
+    )
+    updated_at = fields.DatetimeField(
+        auto_now=True,
+        source_field="updatedAt",
+        index=True,
+    )
+
+    class Meta:
+        table = "knowledge_questions"
+        ordering = ["-updated_at", "-created_at"]
+
+
+class KnowledgeSolution(Model):
+    id = fields.UUIDField(pk=True, description="Knowledge solution ID")
+    question = fields.ForeignKeyField(
+        "models.KnowledgeQuestion",
+        related_name="solutions",
+        source_field="question_id",
+    )
+    paper = fields.ForeignKeyField(
+        "models.Paper",
+        related_name="knowledge_solutions",
+        source_field="paper_id",
+    )
+    report = fields.ForeignKeyField(
+        "models.PaperReadingReport",
+        related_name="knowledge_solutions",
+        source_field="report_id",
+    )
+    method_summary = fields.TextField(
+        source_field="methodSummary",
+        description="Method summary for this question under the paper",
+    )
+    effect_summary = fields.TextField(
+        source_field="effectSummary",
+        description="Effect/performance summary",
+    )
+    limitations = fields.TextField(description="Limitations and caveats")
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="createdAt",
+        index=True,
+    )
+    updated_at = fields.DatetimeField(
+        auto_now=True,
+        source_field="updatedAt",
+        index=True,
+    )
+
+    class Meta:
+        table = "knowledge_solutions"
+        ordering = ["-updated_at", "-created_at"]
+        unique_together = (("question", "report"),)
+
+
+class KnowledgeExtractionRun(Model):
+    id = fields.UUIDField(pk=True, description="Knowledge extraction run ID")
+    report = fields.OneToOneField(
+        "models.PaperReadingReport",
+        related_name="knowledge_extraction_run",
+        source_field="report_id",
+    )
+    status = fields.CharField(max_length=32, default="running", index=True)
+    attempt_count = fields.IntField(default=1, source_field="attemptCount")
+    question_ids = fields.JSONField(default=list, source_field="questionIds")
+    raw_candidates_xml = fields.TextField(
+        null=True,
+        source_field="rawCandidatesXml",
+    )
+    raw_final_xml = fields.TextField(
+        null=True,
+        source_field="rawFinalXml",
+    )
+    error_message = fields.TextField(
+        null=True,
+        source_field="errorMessage",
+    )
+    llm_invocation_stage1 = fields.ForeignKeyField(
+        "models.LLMInvocationLog",
+        null=True,
+        related_name="knowledge_extraction_runs_stage1",
+        source_field="llm_invocation_stage1_id",
+    )
+    llm_invocation_stage2 = fields.ForeignKeyField(
+        "models.LLMInvocationLog",
+        null=True,
+        related_name="knowledge_extraction_runs_stage2",
+        source_field="llm_invocation_stage2_id",
+    )
+    started_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="startedAt",
+        index=True,
+    )
+    finished_at = fields.DatetimeField(
+        null=True,
+        source_field="finishedAt",
+    )
+    updated_at = fields.DatetimeField(
+        auto_now=True,
+        source_field="updatedAt",
+        index=True,
+    )
+
+    class Meta:
+        table = "knowledge_extraction_runs"
+        ordering = ["-updated_at", "-started_at"]
+
+
 class RuntimeSetting(Model):
     key = fields.CharField(max_length=128, pk=True, description="Runtime setting key")
     value = fields.TextField(default="", description="Runtime setting value")

@@ -1,20 +1,32 @@
 import { z } from 'zod';
 
 import {
+  createKnowledgeQuestionResultSchema,
+  deleteKnowledgeQuestionResultSchema,
   filterResultSchema,
+  knowledgeQuestionDetailSchema,
+  knowledgeQuestionSummarySchema,
   readByArxivIdResultSchema,
   readResultSchema,
   readingReportSchema,
   runtimeSettingSchema,
   screeningRuleSchema,
+  triggerKnowledgeExtractionResultSchema,
   triggerResponseSchema,
+  updateKnowledgeQuestionResultSchema,
+  type CreateKnowledgeQuestionResult,
+  type DeleteKnowledgeQuestionResult,
   type ReadByArxivIdResult,
   type FilterResult,
+  type KnowledgeQuestionDetail,
+  type KnowledgeQuestionSummary,
   type ReadResult,
   type ReadingReport,
   type RuntimeSetting,
   type ScreeningRule,
+  type TriggerKnowledgeExtractionResult,
   type TriggerResponse,
+  type UpdateKnowledgeQuestionResult,
   type WorkflowRun,
   type WorkflowRunDetail,
   workflowRunDetailSchema,
@@ -273,5 +285,67 @@ export function updateReadingReportComment(
     method: 'PATCH',
     schema: readingReportSchema,
     body: { comment },
+  });
+}
+
+export function triggerKnowledgeExtraction(
+  reportId: string,
+): Promise<TriggerKnowledgeExtractionResult> {
+  return backendFetch<TriggerKnowledgeExtractionResult>(`/knowledge/reports/${reportId}/extract`, {
+    method: 'POST',
+    schema: triggerKnowledgeExtractionResultSchema,
+    timeoutMs: 120000,
+  });
+}
+
+export function getKnowledgeQuestions({
+  search,
+  limit = 20,
+}: {
+  search?: string;
+  limit?: number;
+} = {}): Promise<KnowledgeQuestionSummary[]> {
+  return backendFetch<KnowledgeQuestionSummary[]>('/knowledge/questions', {
+    query: { search, limit },
+    schema: z.array(knowledgeQuestionSummarySchema),
+  });
+}
+
+export function getKnowledgeQuestion(
+  questionId: string,
+): Promise<KnowledgeQuestionDetail> {
+  return backendFetch<KnowledgeQuestionDetail>(`/knowledge/questions/${questionId}`, {
+    schema: knowledgeQuestionDetailSchema,
+  });
+}
+
+export function createKnowledgeQuestion(payload: {
+  question: string;
+  createdBy?: string;
+}): Promise<CreateKnowledgeQuestionResult> {
+  return backendFetch<CreateKnowledgeQuestionResult>('/knowledge/questions', {
+    method: 'POST',
+    schema: createKnowledgeQuestionResultSchema,
+    body: payload,
+  });
+}
+
+export function updateKnowledgeQuestion(
+  questionId: string,
+  payload: { question: string },
+): Promise<UpdateKnowledgeQuestionResult> {
+  return backendFetch<UpdateKnowledgeQuestionResult>(`/knowledge/questions/${questionId}`, {
+    method: 'PATCH',
+    schema: updateKnowledgeQuestionResultSchema,
+    body: payload,
+  });
+}
+
+export function deleteKnowledgeQuestion(
+  questionId: string,
+): Promise<DeleteKnowledgeQuestionResult> {
+  return backendFetch<DeleteKnowledgeQuestionResult>(`/knowledge/questions/${questionId}`, {
+    method: 'DELETE',
+    schema: deleteKnowledgeQuestionResultSchema,
   });
 }

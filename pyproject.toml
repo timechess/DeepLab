@@ -5,7 +5,9 @@ description = "基于Agent的AI科研辅助平台"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "faiss-cpu>=1.13.2",
     "fastapi>=0.135.0",
+    "fastembed>=0.7.4",
     "google-genai>=1.65.0",
     "python-dotenv>=1.2.2",
     "tortoise-orm[asyncpg]>=1.1.5",
