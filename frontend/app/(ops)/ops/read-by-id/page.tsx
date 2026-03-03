@@ -1,13 +1,7 @@
 import Link from 'next/link';
 
 import { ReadByIdForm } from '@/components/ops/read-by-id-form';
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
+import { decodeQueryParam } from '@/lib/query';
 
 export default async function ReadByArxivIdPage({
   searchParams,
@@ -34,8 +28,8 @@ export default async function ReadByArxivIdPage({
         </div>
       </header>
 
-      {query.notice ? <p className="notice">{decodeParam(query.notice)}</p> : null}
-      {query.error ? <p className="notice notice-error">{decodeParam(query.error)}</p> : null}
+      {query.notice ? <p className="notice">{decodeQueryParam(query.notice)}</p> : null}
+      {query.error ? <p className="notice notice-error">{decodeQueryParam(query.error)}</p> : null}
 
       <section className="panel">
         <p className="panel-kicker">手动触发</p>

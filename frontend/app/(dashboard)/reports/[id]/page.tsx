@@ -1,20 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { triggerKnowledgeExtractionAction } from '@/app/actions';
+import { triggerKnowledgeExtractionRefreshAction } from '@/app/actions';
 import { KnowledgeExtractionTrigger } from '@/components/reports/knowledge-extraction-trigger';
 import { CommentEditor } from '@/components/reports/comment-editor';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { getReadingReport } from '@/lib/api/client';
 import { MarkdownRenderer } from '@/lib/markdown/renderer';
+import { decodeQueryParam } from '@/lib/query';
 import { formatDateTime } from '@/lib/time';
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
 
 function safeJoin(values: string[] | undefined): string {
   if (!values || values.length === 0) {
@@ -128,8 +122,8 @@ export default async function ReportDetailPage({
     throw error;
   }
 
-  const notice = decodeParam(query.notice);
-  const error = decodeParam(query.error);
+  const notice = decodeQueryParam(query.notice);
+  const error = decodeQueryParam(query.error);
   const paperMeta = report.paperMeta;
   const hasAbstract = Boolean(paperMeta?.summary?.trim() || paperMeta?.aiSummary?.trim());
   const arxivUrl = toArxivUrl(paperMeta?.id, report.paperId);
@@ -144,7 +138,7 @@ export default async function ReportDetailPage({
     finishedAt: null,
     questionIds: [],
   };
-  const extractionAction = triggerKnowledgeExtractionAction.bind(null, report.id);
+  const extractionAction = triggerKnowledgeExtractionRefreshAction.bind(null, report.id);
   const knowledgeQuestions = report.knowledgeQuestions ?? [];
   const extractionFinished = extractionState.status === 'succeeded' || extractionState.locked;
   const extractionRunning = extractionState.status === 'running';
@@ -318,7 +312,6 @@ export default async function ReportDetailPage({
           action={extractionAction}
           extractionFinished={extractionFinished}
           extractionRunning={extractionRunning}
-          reportId={report.id}
         />
         <p className="page-subtitle" style={{ marginTop: 10 }}>
           知识提炼依赖本地 embedding 模型。若触发时报“模型未下载”，请先前往{' '}

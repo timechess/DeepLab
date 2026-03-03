@@ -3,14 +3,8 @@ import { notFound } from 'next/navigation';
 
 import { deleteKnowledgeQuestionAction, updateKnowledgeQuestionAction } from '@/app/actions';
 import { getKnowledgeQuestion } from '@/lib/api/client';
+import { decodeQueryParam } from '@/lib/query';
 import { formatDateTime } from '@/lib/time';
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
 
 function toArxivUrl(paperId: string): string | null {
   const value = paperId.trim();
@@ -28,8 +22,8 @@ export default async function KnowledgeQuestionDetailPage({
   searchParams: Promise<{ notice?: string; error?: string }>;
 }) {
   const [{ id }, query] = await Promise.all([params, searchParams]);
-  const notice = decodeParam(query.notice);
-  const error = decodeParam(query.error);
+  const notice = decodeQueryParam(query.notice);
+  const error = decodeQueryParam(query.error);
 
   let question;
   try {

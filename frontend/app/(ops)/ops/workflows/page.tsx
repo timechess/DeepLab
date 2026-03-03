@@ -1,11 +1,10 @@
 import Link from 'next/link';
 
-import {
-  triggerDailyWorkflowAction,
-} from '@/app/actions';
+import { DailyWorkflowTrigger } from '@/components/ops/daily-workflow-trigger';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { getWorkflowRuns } from '@/lib/api/client';
 import { formatTriggerType, formatWorkflowName } from '@/lib/labels';
+import { decodeQueryParam } from '@/lib/query';
 import { formatDateTime } from '@/lib/time';
 
 const FILTER_STATUSES = ['running', 'succeeded', 'failed', 'partial_succeeded'] as const;
@@ -36,13 +35,6 @@ function formatWorkflowModel(context: Record<string, unknown>): string {
   return labels.length > 0 ? Array.from(new Set(labels)).join(' | ') : '--';
 }
 
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
-
 export default async function OpsWorkflowsPage({
   searchParams,
 }: {
@@ -58,10 +50,6 @@ export default async function OpsWorkflowsPage({
     ? runs.filter((run) => run.status === selectedStatus)
     : runs;
 
-  const redirectTo = selectedStatus
-    ? `/ops/workflows?status=${encodeURIComponent(selectedStatus)}`
-    : '/ops/workflows';
-
   return (
     <section className="page">
       <header className="page-header">
@@ -71,17 +59,12 @@ export default async function OpsWorkflowsPage({
         </div>
       </header>
 
-      {query.notice ? <p className="notice">{decodeParam(query.notice)}</p> : null}
-      {query.error ? <p className="notice notice-error">{decodeParam(query.error)}</p> : null}
+      {query.notice ? <p className="notice">{decodeQueryParam(query.notice)}</p> : null}
+      {query.error ? <p className="notice notice-error">{decodeQueryParam(query.error)}</p> : null}
 
       <section className="panel" style={{ display: 'grid', gap: 12 }}>
         <div className="toolbar">
-          <form action={triggerDailyWorkflowAction} className="inline-form">
-            <input name="redirectTo" type="hidden" value={redirectTo} />
-            <button className="button button-primary" type="submit">
-              触发每日工作流
-            </button>
-          </form>
+          <DailyWorkflowTrigger />
         </div>
 
         <form className="inline-form" method="get">

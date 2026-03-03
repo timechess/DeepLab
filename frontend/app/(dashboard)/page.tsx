@@ -14,6 +14,7 @@ import {
   pickStage,
 } from '@/lib/dashboard';
 import { formatTriggerType, formatWorkflowName } from '@/lib/labels';
+import { decodeQueryParam } from '@/lib/query';
 import { formatDateTime } from '@/lib/time';
 
 const STAGE_FILTERING = 'paper_filtering';
@@ -22,13 +23,6 @@ const CHINA_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function isDefined<T>(value: T | undefined | null): value is T {
   return value !== undefined && value !== null;
-}
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
 }
 
 function toChinaDateKey(date: Date): string {
@@ -113,8 +107,8 @@ export default async function DashboardPage({
         <StatusBadge status={latestWorkflow.status} />
       </header>
 
-      {params.notice ? <p className="notice">{decodeParam(params.notice)}</p> : null}
-      {params.error ? <p className="notice notice-error">{decodeParam(params.error)}</p> : null}
+      {params.notice ? <p className="notice">{decodeQueryParam(params.notice)}</p> : null}
+      {params.error ? <p className="notice notice-error">{decodeQueryParam(params.error)}</p> : null}
 
       <section className="panel">
         <p className="panel-kicker">工作流核心信息</p>

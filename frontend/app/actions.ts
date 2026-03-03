@@ -43,6 +43,11 @@ function withQuery(path: string, key: string, value: string): string {
   return `${pathname}?${params.toString()}`;
 }
 
+type ActionResult = {
+  ok: boolean;
+  message: string;
+};
+
 export async function updateReportCommentAction(reportId: string, formData: FormData) {
   const comment = String(formData.get('comment') ?? '');
   const redirectTo = toSafePath(formData.get('redirectTo'), `/reports/${reportId}`);
@@ -83,6 +88,29 @@ export async function triggerKnowledgeExtractionAction(reportId: string, formDat
   redirect(nextLocation);
 }
 
+export async function triggerKnowledgeExtractionRefreshAction(
+  reportId: string,
+): Promise<ActionResult> {
+  try {
+    const result = await triggerKnowledgeExtraction(reportId);
+    revalidatePath('/');
+    revalidatePath('/knowledge');
+    revalidatePath(`/reports/${reportId}`);
+    for (const questionId of result.questionIds) {
+      revalidatePath(`/knowledge/${questionId}`);
+    }
+    return {
+      ok: true,
+      message: result.message || '知识提炼任务已触发。',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: toMessage(error),
+    };
+  }
+}
+
 export async function triggerDailyWorkflowAction(formData: FormData) {
   const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/workflows');
   let nextLocation: string;
@@ -101,6 +129,23 @@ export async function triggerDailyWorkflowAction(formData: FormData) {
   }
 
   redirect(nextLocation);
+}
+
+export async function triggerDailyWorkflowRefreshAction(): Promise<ActionResult> {
+  try {
+    const result = await triggerDailyWorkflow();
+    revalidatePath('/');
+    revalidatePath('/ops/workflows');
+    return {
+      ok: true,
+      message: `已触发每日工作流：${result.workflow_id}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: toMessage(error),
+    };
+  }
 }
 
 export async function triggerFetchPapersAction(formData: FormData) {

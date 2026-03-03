@@ -1,54 +1,67 @@
 'use client';
 
 import Link from 'next/link';
-import { useFormStatus } from 'react-dom';
+import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 
-function SubmitButton({
+export function KnowledgeExtractionTrigger({
+  action,
   extractionFinished,
   extractionRunning,
 }: {
+  action: () => Promise<{ ok: boolean; message: string }>;
   extractionFinished: boolean;
   extractionRunning: boolean;
 }) {
-  const { pending } = useFormStatus();
+  const router = useRouter();
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
 
-  const disabled = extractionFinished || extractionRunning || pending;
+  const disabled = extractionFinished || extractionRunning || isPending;
   const label = extractionFinished
     ? '已锁定（不可重复触发）'
     : extractionRunning
       ? '提炼运行中...'
-      : pending
+      : isPending
         ? '已提交，页面刷新中...'
         : '触发知识提炼';
 
-  return (
-    <button className="button button-primary" disabled={disabled} type="submit">
-      {label}
-    </button>
-  );
-}
+  const handleClick = () => {
+    if (disabled) {
+      return;
+    }
 
-export function KnowledgeExtractionTrigger({
-  action,
-  reportId,
-  extractionFinished,
-  extractionRunning,
-}: {
-  action: (formData: FormData) => void | Promise<void>;
-  reportId: string;
-  extractionFinished: boolean;
-  extractionRunning: boolean;
-}) {
+    setNotice(null);
+    setError(null);
+    startTransition(async () => {
+      try {
+        const result = await action();
+        if (result.ok) {
+          setNotice(result.message);
+        } else {
+          setError(result.message);
+        }
+        router.refresh();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '请求失败，请稍后重试。';
+        setError(message);
+      }
+    });
+  };
+
   return (
-    <form action={action} className="inline-form" style={{ marginTop: 12 }}>
-      <input name="redirectTo" type="hidden" value={`/reports/${reportId}`} />
-      <SubmitButton
-        extractionFinished={extractionFinished}
-        extractionRunning={extractionRunning}
-      />
-      <Link className="button button-secondary" href="/knowledge">
-        进入知识库
-      </Link>
-    </form>
+    <div style={{ marginTop: 12 }}>
+      <div className="inline-form">
+        <button className="button button-primary" disabled={disabled} onClick={handleClick} type="button">
+          {label}
+        </button>
+        <Link className="button button-secondary" href="/knowledge">
+          进入知识库
+        </Link>
+      </div>
+      {notice ? <p className="notice" style={{ marginTop: 10 }}>{notice}</p> : null}
+      {error ? <p className="notice notice-error" style={{ marginTop: 10 }}>{error}</p> : null}
+    </div>
   );
 }

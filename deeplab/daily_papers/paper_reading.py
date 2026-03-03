@@ -12,7 +12,7 @@ from deeplab.daily_papers.mistral_ocr import (
     DEFAULT_MISTRAL_BASE_URL,
     DEFAULT_MISTRAL_OCR_MODEL,
     MistralOCRSettings,
-    extract_pdf_text_with_mistral,
+    extract_pdf_text,
 )
 from deeplab.llm_provider import LLMRuntimeSettings, get_llm_runtime_settings, invoke_llm_sync
 from deeplab.model import (
@@ -166,13 +166,14 @@ async def _mark_workflow_llm_usage(
     await workflow_execution.save(update_fields=["context"])
 
 
-async def _get_mistral_runtime_settings() -> MistralOCRSettings:
+async def _get_mistral_runtime_settings() -> MistralOCRSettings | None:
     api_key = await resolve_setting_value(
         key="mistral_api_key",
         env_keys=MISTRAL_API_KEY_ENV_KEYS,
     )
     if not api_key:
-        raise ValueError("缺少 Mistral OCR API Key，请先在前端“系统设置”页面配置。")
+        logger.info("未配置 Mistral OCR API Key，回退到基础 PDF 文本提取。")
+        return None
 
     base_url = await resolve_setting_value(
         key="mistral_base_url",
@@ -417,7 +418,7 @@ async def _generate_text(
 async def _read_single_paper(
     paper: Paper,
     llm_settings: LLMRuntimeSettings,
-    ocr_settings: MistralOCRSettings,
+    ocr_settings: MistralOCRSettings | None,
     stage1_system_prompt_template: str,
     stage1_user_prompt_template: str,
     stage2_system_prompt_template: str,
@@ -436,13 +437,15 @@ async def _read_single_paper(
         pdf_path = Path(tmp_dir) / f"{paper.id}.pdf"
         await asyncio.to_thread(_download_arxiv_pdf, paper.id, pdf_path)
 
-        ocr_text, ocr_metadata = await extract_pdf_text_with_mistral(
-            settings=ocr_settings,
+        ocr_text, ocr_metadata = await extract_pdf_text(
             pdf_path=pdf_path,
+            settings=ocr_settings,
         )
         ocr_prompt_text = ocr_text.strip()
         if not ocr_prompt_text.strip():
             raise ValueError("OCR 提取文本为空，无法继续精读。")
+        ocr_provider = str(ocr_metadata.get("provider", "")).strip() or "unknown"
+        ocr_model = str(ocr_metadata.get("model", "")).strip() or "unknown"
 
         stage1_system_prompt, stage1_user_prompt = _build_stage1_prompts(
             paper,
@@ -465,8 +468,8 @@ async def _read_single_paper(
                 "paper_id": paper.id,
                 "paper_title": paper.title,
                 "pdf_url": _build_arxiv_pdf_url(paper.id),
-                "ocr_provider": "mistral-ocr",
-                "ocr_model": ocr_settings.model,
+                "ocr_provider": ocr_provider,
+                "ocr_model": ocr_model,
                 "ocr_page_count": ocr_metadata.get("page_count"),
                 "ocr_text_chars": len(ocr_text),
                 "ocr_prompt_chars": len(ocr_prompt_text),
@@ -526,8 +529,8 @@ async def _read_single_paper(
                 "paper_id": paper.id,
                 "paper_title": paper.title,
                 "pdf_url": _build_arxiv_pdf_url(paper.id),
-                "ocr_provider": "mistral-ocr",
-                "ocr_model": ocr_settings.model,
+                "ocr_provider": ocr_provider,
+                "ocr_model": ocr_model,
                 "ocr_page_count": ocr_metadata.get("page_count"),
                 "ocr_text_chars": len(ocr_text),
                 "ocr_prompt_chars": len(ocr_prompt_text),

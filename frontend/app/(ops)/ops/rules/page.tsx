@@ -3,13 +3,7 @@ import {
 } from '@/app/actions';
 import { RulesList } from '@/components/ops/rules-list';
 import { getScreeningRules } from '@/lib/api/client';
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
+import { decodeQueryParam } from '@/lib/query';
 
 export default async function RulesPage({
   searchParams,
@@ -28,8 +22,8 @@ export default async function RulesPage({
         </div>
       </header>
 
-      {query.notice ? <p className="notice">{decodeParam(query.notice)}</p> : null}
-      {query.error ? <p className="notice notice-error">{decodeParam(query.error)}</p> : null}
+      {query.notice ? <p className="notice">{decodeQueryParam(query.notice)}</p> : null}
+      {query.error ? <p className="notice notice-error">{decodeQueryParam(query.error)}</p> : null}
 
       <section className="panel">
         <p className="panel-kicker">创建规则</p>

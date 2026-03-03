@@ -4,13 +4,7 @@ import { createKnowledgeQuestionAction } from '@/app/actions';
 import { KnowledgeNotesList } from '@/components/knowledge/notes-list';
 import { KnowledgeQuestionsList } from '@/components/knowledge/questions-list';
 import { getKnowledgeNotes, getKnowledgeQuestions } from '@/lib/api/client';
-
-function decodeParam(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return decodeURIComponent(value);
-}
+import { decodeQueryParam } from '@/lib/query';
 
 export default async function KnowledgePage({
   searchParams,
@@ -36,8 +30,8 @@ export default async function KnowledgePage({
       : Promise.resolve([]),
   ]);
 
-  const notice = decodeParam(params.notice);
-  const error = decodeParam(params.error);
+  const notice = decodeQueryParam(params.notice);
+  const error = decodeQueryParam(params.error);
   const questionId = params.questionId?.trim();
   const questionRedirectTo = keyword
     ? `/knowledge?view=questions&q=${encodeURIComponent(keyword)}`

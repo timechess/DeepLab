@@ -385,3 +385,57 @@ async def extract_pdf_text_with_mistral(
         settings=settings,
         pdf_path=pdf_path,
     )
+
+
+def _extract_pdf_text_with_basic_library_sync(
+    *,
+    pdf_path: Path,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        from pypdf import PdfReader
+    except Exception as exc:
+        raise RuntimeError(
+            "未配置 Mistral OCR API Key，且未安装基础 PDF 文本提取依赖 pypdf。"
+            "请安装 pypdf 或配置 Mistral OCR。"
+        ) from exc
+
+    reader = PdfReader(str(pdf_path))
+    page_count = len(reader.pages)
+    blocks: list[str] = []
+    for index, page in enumerate(reader.pages):
+        page_text = str(page.extract_text() or "").strip()
+        if not page_text:
+            continue
+        blocks.append(f"[第{index + 1}页]\n{page_text}")
+
+    content = "\n\n".join(blocks).strip()
+    if not content:
+        raise RuntimeError("基础 PDF 文本提取未提取出可用文本。")
+
+    return content, {
+        "provider": "pypdf",
+        "model": "pypdf",
+        "page_count": page_count,
+        "extracted_page_count": len(blocks),
+        "ocr_document_source": "local_pdf",
+    }
+
+
+async def extract_pdf_text_with_basic_library(
+    *,
+    pdf_path: Path,
+) -> tuple[str, dict[str, Any]]:
+    return await asyncio.to_thread(
+        _extract_pdf_text_with_basic_library_sync,
+        pdf_path=pdf_path,
+    )
+
+
+async def extract_pdf_text(
+    *,
+    pdf_path: Path,
+    settings: MistralOCRSettings | None,
+) -> tuple[str, dict[str, Any]]:
+    if settings is None or not settings.api_key.strip():
+        return await extract_pdf_text_with_basic_library(pdf_path=pdf_path)
+    return await extract_pdf_text_with_mistral(settings=settings, pdf_path=pdf_path)
