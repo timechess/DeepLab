@@ -12,7 +12,12 @@ import NextLink from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { KnowledgeLinkTarget, KnowledgeNoteDetail, KnowledgeNoteLink } from '@/lib/api/schemas';
+import type {
+  KnowledgeLinkTarget,
+  KnowledgeNoteDetail,
+  KnowledgeNoteLink,
+  KnowledgeNoteSummary,
+} from '@/lib/api/schemas';
 import { formatDateTime } from '@/lib/time';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -54,7 +59,12 @@ type SlashCommand = {
   run?: (editor: Editor) => void;
 };
 
+type NoteTextStats = {
+  characters: number;
+};
+
 const SAVE_DEBOUNCE_MS = 2300;
+const UNTITLED_NOTE_BASE = '未命名笔记';
 const KnowledgeMention = Mention.extend({
   addAttributes() {
     return {
@@ -186,6 +196,50 @@ function sectionTitle(targetType: LinkTargetType): string {
   return '笔记链接';
 }
 
+function textStatsFromContent(rawText: string): NoteTextStats {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return { characters: 0 };
+  }
+  const characters = trimmed.replace(/\s+/g, '').length;
+  return { characters };
+}
+
+function editorTextStats(editor: Editor): NoteTextStats {
+  const text = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n', '\0');
+  return textStatsFromContent(text);
+}
+
+function buildUntitledPattern(): RegExp {
+  return /^未命名笔记(?:\s+(\d+))?$/;
+}
+
+function resolveUntitledTitle(titles: string[]): string {
+  const used = new Set<number>();
+  const pattern = buildUntitledPattern();
+  for (const rawTitle of titles) {
+    const title = rawTitle.trim();
+    const matched = title.match(pattern);
+    if (!matched) {
+      continue;
+    }
+    const number = matched[1] ? Number.parseInt(matched[1], 10) : 1;
+    if (!Number.isNaN(number) && number >= 1) {
+      used.add(number);
+    }
+  }
+
+  let current = 1;
+  while (used.has(current)) {
+    current += 1;
+  }
+  return current === 1 ? UNTITLED_NOTE_BASE : `${UNTITLED_NOTE_BASE} ${current}`;
+}
+
+function isUntitledTitle(value: string): boolean {
+  return buildUntitledPattern().test(value.trim());
+}
+
 export function NoteEditor({
   mode,
   initialNote,
@@ -197,12 +251,18 @@ export function NoteEditor({
   const lowlight = useMemo(() => createLowlight(common), []);
   const editorSurfaceRef = useRef<HTMLDivElement | null>(null);
   const targetQueryInputRef = useRef<HTMLInputElement | null>(null);
+  const initialDoc = useMemo(() => toSafeDoc(initialNote?.contentJson), [initialNote?.contentJson]);
 
   const [noteId, setNoteId] = useState<string | null>(initialNote?.id ?? null);
-  const [noteTitle, setNoteTitle] = useState<string>(initialNote?.title ?? '');
+  const [noteTitle, setNoteTitle] = useState<string>(initialNote?.title ?? UNTITLED_NOTE_BASE);
+  const [defaultUntitledTitle, setDefaultUntitledTitle] = useState(UNTITLED_NOTE_BASE);
   const [noteDetail, setNoteDetail] = useState<KnowledgeNoteDetail | null>(initialNote ?? null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [focusMode, setFocusMode] = useState(false);
+  const [textStats, setTextStats] = useState<NoteTextStats>(() =>
+    textStatsFromContent(initialNote?.plainText || ''),
+  );
 
   const [slashMenu, setSlashMenu] = useState<SlashMenuState>(emptySlashMenuState);
   const [targetPicker, setTargetPicker] = useState<TargetPickerState>(emptyTargetPickerState);
@@ -214,13 +274,23 @@ export function NoteEditor({
   const inFlightRef = useRef(false);
   const queuedRef = useRef(false);
   const dirtyRef = useRef(false);
-  const latestDocRef = useRef<Record<string, unknown>>(toSafeDoc(initialNote?.contentJson));
+  const noteTitleRef = useRef(noteTitle);
+  const defaultUntitledTitleRef = useRef(defaultUntitledTitle);
+  const latestDocRef = useRef<Record<string, unknown>>(initialDoc);
   const snapshotRef = useRef(
     JSON.stringify({
-      title: (initialNote?.title || '').trim(),
-      contentJson: toSafeDoc(initialNote?.contentJson),
+      title: (initialNote?.title || UNTITLED_NOTE_BASE).trim(),
+      contentJson: initialDoc,
     }),
   );
+
+  useEffect(() => {
+    noteTitleRef.current = noteTitle;
+  }, [noteTitle]);
+
+  useEffect(() => {
+    defaultUntitledTitleRef.current = defaultUntitledTitle;
+  }, [defaultUntitledTitle]);
 
   const slashCommands = useMemo<SlashCommand[]>(
     () => [
@@ -309,10 +379,26 @@ export function NoteEditor({
     setTargetLoading(false);
   }, []);
 
+  const openTargetPicker = useCallback(
+    (targetType: LinkTargetType, range: EditorRange, position: EditorPosition) => {
+      setTargetPicker({
+        open: true,
+        targetType,
+        query: '',
+        position,
+        range,
+        activeIndex: 0,
+      });
+      closeSlashMenu();
+    },
+    [closeSlashMenu],
+  );
+
   const flushSave = useCallback(
     async (force = false) => {
+      const resolvedTitle = noteTitleRef.current.trim() || defaultUntitledTitleRef.current;
       const nextPayload = {
-        title: noteTitle.trim(),
+        title: resolvedTitle,
         contentJson: latestDocRef.current,
       };
       const nextSnapshot = JSON.stringify(nextPayload);
@@ -352,6 +438,7 @@ export function NoteEditor({
         }
         setNoteDetail(saved);
         setNoteTitle(saved.title);
+        noteTitleRef.current = saved.title;
         snapshotRef.current = JSON.stringify({
           title: saved.title.trim(),
           contentJson: toSafeDoc(saved.contentJson),
@@ -369,8 +456,59 @@ export function NoteEditor({
         }
       }
     },
-    [noteId, noteTitle, router],
+    [noteId, router],
   );
+
+  const queueAutosave = useCallback(() => {
+    dirtyRef.current = true;
+    setSaveState((current) => (current === 'error' ? current : 'idle'));
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = setTimeout(() => {
+      void flushSave();
+    }, SAVE_DEBOUNCE_MS);
+  }, [flushSave]);
+
+  useEffect(() => {
+    if (mode !== 'new' || initialNote || noteId) {
+      return;
+    }
+    let cancelled = false;
+    const prepareUntitledTitle = async () => {
+      try {
+        const query = new URLSearchParams({
+          search: UNTITLED_NOTE_BASE,
+          limit: '200',
+        });
+        const notes = await apiBackendFetch<KnowledgeNoteSummary[]>(
+          `knowledge/notes?${query.toString()}`,
+        );
+        if (cancelled) {
+          return;
+        }
+        const nextTitle = resolveUntitledTitle(notes.map((item) => item.title));
+        setDefaultUntitledTitle(nextTitle);
+        defaultUntitledTitleRef.current = nextTitle;
+        setNoteTitle((current) => {
+          if (!current.trim() || isUntitledTitle(current)) {
+            noteTitleRef.current = nextTitle;
+            return nextTitle;
+          }
+          return current;
+        });
+      } catch {
+        if (!cancelled) {
+          setDefaultUntitledTitle(UNTITLED_NOTE_BASE);
+          defaultUntitledTitleRef.current = UNTITLED_NOTE_BASE;
+        }
+      }
+    };
+    void prepareUntitledTitle();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialNote, mode, noteId]);
 
   const syncSlashTrigger = useCallback(
     (currentEditor: Editor) => {
@@ -409,7 +547,7 @@ export function NoteEditor({
   );
 
   const editor = useEditor({
-    content: toSafeDoc(initialNote?.contentJson),
+    content: initialDoc,
     extensions: [
       StarterKit.configure({ codeBlock: false }),
       CodeBlockLowlight.configure({ lowlight }),
@@ -440,7 +578,7 @@ export function NoteEditor({
         },
       }),
       Placeholder.configure({
-        placeholder: '输入 / 打开命令菜单，像 Notion 一样插入代码块、公式和实体链接。',
+        placeholder: '输入内容，/ 打开命令',
       }),
       Mathematics.configure({
         katexOptions: {
@@ -455,14 +593,8 @@ export function NoteEditor({
     },
     onUpdate: ({ editor: currentEditor }) => {
       latestDocRef.current = currentEditor.getJSON() as Record<string, unknown>;
-      dirtyRef.current = true;
-      setSaveState((current) => (current === 'error' ? current : 'idle'));
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-      }
-      autosaveTimerRef.current = setTimeout(() => {
-        void flushSave();
-      }, SAVE_DEBOUNCE_MS);
+      setTextStats(editorTextStats(currentEditor));
+      queueAutosave();
       syncSlashTrigger(currentEditor);
     },
     onSelectionUpdate: ({ editor: currentEditor }) => {
@@ -489,15 +621,7 @@ export function NoteEditor({
         return;
       }
       if (command.targetType) {
-        setTargetPicker({
-          open: true,
-          targetType: command.targetType,
-          query: '',
-          position: slashMenu.position,
-          range: slashMenu.range,
-          activeIndex: 0,
-        });
-        closeSlashMenu();
+        openTargetPicker(command.targetType, slashMenu.range, slashMenu.position);
         return;
       }
 
@@ -505,7 +629,7 @@ export function NoteEditor({
       command.run?.(editor);
       closeSlashMenu();
     },
-    [closeSlashMenu, editor, slashMenu.position, slashMenu.range],
+    [closeSlashMenu, editor, openTargetPicker, slashMenu.position, slashMenu.range],
   );
 
   const insertTargetMention = useCallback(
@@ -536,24 +660,6 @@ export function NoteEditor({
     [closeTargetPicker, editor, targetPicker.range],
   );
 
-  const deleteCurrentNote = useCallback(async () => {
-    if (!noteId) {
-      router.push('/knowledge?view=notes');
-      return;
-    }
-    if (!window.confirm('确认删除该笔记吗？此操作不可恢复。')) {
-      return;
-    }
-    try {
-      await apiBackendFetch(`knowledge/notes/${noteId}`, { method: 'DELETE' });
-      router.push('/knowledge?view=notes&notice=' + encodeURIComponent('笔记已删除。'));
-      router.refresh();
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : '删除失败');
-      setSaveState('error');
-    }
-  }, [noteId, router]);
-
   useEffect(() => {
     return () => {
       if (autosaveTimerRef.current) {
@@ -572,6 +678,24 @@ export function NoteEditor({
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
   }, [flushSave]);
+
+  useEffect(() => {
+    const onKeydown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        setFocusMode((current) => !current);
+      }
+    };
+    window.addEventListener('keydown', onKeydown);
+    return () => window.removeEventListener('keydown', onKeydown);
+  }, []);
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+    setTextStats(editorTextStats(editor));
+  }, [editor]);
 
   useEffect(() => {
     if (!editor) {
@@ -699,56 +823,56 @@ export function NoteEditor({
     };
   }, [noteDetail?.outgoingLinks]);
 
+  const incomingLinks = noteDetail?.incomingLinks || [];
+  const outgoingCount = noteDetail?.outgoingLinks.length || 0;
+  const incomingCount = incomingLinks.length;
+
   return (
-    <div className="note-editor-layout">
+    <div className={`note-editor-layout${focusMode ? ' note-editor-layout-focus' : ''}`}>
       <section className="note-editor-main">
         <div className="note-editor-meta">
-          <span className={`note-save-badge note-save-${saveState}`}>
-            {saveBadgeText(saveState, noteDetail?.updatedAt)}
-          </span>
-          {mode === 'new' && !noteId ? (
-            <span className="note-save-hint">输入后自动创建</span>
-          ) : (
+          <div className="note-editor-status-group">
+            <span className={`note-save-badge note-save-${saveState}`}>
+              {saveBadgeText(saveState, noteDetail?.updatedAt)}
+            </span>
             <span className="note-save-hint">{noteId || '未创建'}</span>
-          )}
-          <button
-            className="button button-secondary note-save-btn"
-            onClick={() => void flushSave(true)}
-            type="button"
-          >
-            立即保存
-          </button>
-          <button
-            className="button button-danger note-save-btn"
-            onClick={() => void deleteCurrentNote()}
-            type="button"
-          >
-            删除笔记
-          </button>
+          </div>
+          <div className="note-editor-action-group">
+            <button
+              className="button button-secondary note-save-btn"
+              onClick={() => setFocusMode((current) => !current)}
+              type="button"
+            >
+              {focusMode ? '退出专注' : '专注模式'}
+            </button>
+            <button
+              className="button button-secondary note-save-btn"
+              onClick={() => void flushSave(true)}
+              type="button"
+            >
+              立即保存
+            </button>
+          </div>
         </div>
 
         {saveError ? <p className="notice notice-error">{saveError}</p> : null}
 
+        <div className="note-editor-stats-row">
+          <span className="note-stat-chip">字数 {textStats.characters}</span>
+          <span className="note-stat-chip">出链 {outgoingCount}</span>
+          <span className="note-stat-chip">入链 {incomingCount}</span>
+        </div>
+
         <input
           className="note-title-input"
           onChange={(event) => {
+            noteTitleRef.current = event.target.value;
             setNoteTitle(event.target.value);
-            dirtyRef.current = true;
-            setSaveState((current) => (current === 'error' ? current : 'idle'));
-            if (autosaveTimerRef.current) {
-              clearTimeout(autosaveTimerRef.current);
-            }
-            autosaveTimerRef.current = setTimeout(() => {
-              void flushSave();
-            }, SAVE_DEBOUNCE_MS);
+            queueAutosave();
           }}
           placeholder="笔记标题"
           value={noteTitle}
         />
-
-        <div className="note-editor-hint-row">
-          <span className="note-command-hint">输入 `/` 打开命令菜单（类似 Notion）</span>
-        </div>
 
         <div className="note-editor-surface" ref={editorSurfaceRef}>
           <EditorContent editor={editor} />
@@ -869,48 +993,68 @@ export function NoteEditor({
         </div>
       </section>
 
-      <aside className="note-editor-sidebar">
-        {(['paper', 'question', 'note'] as LinkTargetType[]).map((targetType) => {
-          const links = groupedLinks[targetType];
-          return (
-            <section className="note-sidebar-section" key={targetType}>
-              <p className="note-sidebar-title">
-                {sectionTitle(targetType)}（{links.length}）
-              </p>
-              <ul className="note-link-list">
-                {links.map((link) => {
-                  const href = targetHref(link.targetType, link.targetId);
-                  const label = normalizeLinkLabel(link);
-                  const isPaper = link.targetType === 'paper';
-                  return (
-                    <li className="note-link-item" key={link.id}>
-                      <p className="note-link-meta">{formatDateTime(link.createdAt)}</p>
-                      {isPaper ? <p className="note-link-title">{label}</p> : null}
-                      {isPaper ? (
-                        <div className="note-link-chip-row">
-                          {link.readingReportId ? (
-                            <NextLink className="note-link-chip" href={`/reports/${link.readingReportId}`}>
-                              精读报告
-                            </NextLink>
-                          ) : null}
-                          <a className="note-link-chip" href={href} rel="noreferrer" target="_blank">
-                            arXiv
-                          </a>
-                        </div>
-                      ) : (
-                        <NextLink className="note-link-chip" href={href}>
-                          {label}
-                        </NextLink>
-                      )}
-                    </li>
-                  );
-                })}
-                {links.length === 0 ? <li className="note-link-empty">暂无链接</li> : null}
-              </ul>
-            </section>
-          );
-        })}
-      </aside>
+      {!focusMode ? (
+        <aside className="note-editor-sidebar">
+          {(['paper', 'question', 'note'] as LinkTargetType[]).map((targetType) => {
+            const links = groupedLinks[targetType];
+            return (
+              <section className="note-sidebar-section" key={targetType}>
+                <p className="note-sidebar-title">
+                  {sectionTitle(targetType)}（{links.length}）
+                </p>
+                <ul className="note-link-list">
+                  {links.map((link) => {
+                    const href = targetHref(link.targetType, link.targetId);
+                    const label = normalizeLinkLabel(link);
+                    const isPaper = link.targetType === 'paper';
+                    return (
+                      <li className="note-link-item" key={link.id}>
+                        <p className="note-link-meta">{formatDateTime(link.createdAt)}</p>
+                        <p className="note-link-title">{label}</p>
+                        {isPaper ? (
+                          <div className="note-link-chip-row">
+                            {link.readingReportId ? (
+                              <NextLink className="note-link-chip" href={`/reports/${link.readingReportId}`}>
+                                精读报告
+                              </NextLink>
+                            ) : null}
+                            <a className="note-link-chip" href={href} rel="noreferrer" target="_blank">
+                              arXiv
+                            </a>
+                          </div>
+                        ) : (
+                          <NextLink className="note-link-chip" href={href}>
+                            打开链接
+                          </NextLink>
+                        )}
+                      </li>
+                    );
+                  })}
+                  {links.length === 0 ? <li className="note-link-empty">暂无链接</li> : null}
+                </ul>
+              </section>
+            );
+          })}
+
+          <section className="note-sidebar-section">
+            <p className="note-sidebar-title">反向链接（{incomingCount}）</p>
+            <ul className="note-link-list">
+              {incomingLinks.map((link) => (
+                <li className="note-link-item" key={link.id}>
+                  <p className="note-link-meta">创建于 {formatDateTime(link.createdAt)}</p>
+                  <NextLink className="note-link-chip" href={`/knowledge/notes/${link.sourceNoteId}/edit`}>
+                    {link.sourceNoteTitle?.trim() || link.sourceNoteId}
+                  </NextLink>
+                  {link.sourceNoteUpdatedAt ? (
+                    <p className="note-link-meta">源笔记更新于 {formatDateTime(link.sourceNoteUpdatedAt)}</p>
+                  ) : null}
+                </li>
+              ))}
+              {incomingCount === 0 ? <li className="note-link-empty">暂无反向链接</li> : null}
+            </ul>
+          </section>
+        </aside>
+      ) : null}
     </div>
   );
 }

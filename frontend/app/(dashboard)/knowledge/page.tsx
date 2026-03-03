@@ -36,6 +36,9 @@ export default async function KnowledgePage({
   const questionRedirectTo = keyword
     ? `/knowledge?view=questions&q=${encodeURIComponent(keyword)}`
     : '/knowledge?view=questions';
+  const notesRedirectTo = keyword
+    ? `/knowledge?view=notes&q=${encodeURIComponent(keyword)}`
+    : '/knowledge?view=notes';
 
   const questionsTabHref = keyword
     ? `/knowledge?view=questions&q=${encodeURIComponent(keyword)}`
@@ -149,7 +152,7 @@ export default async function KnowledgePage({
           </form>
 
           {notes.length > 0 ? (
-            <KnowledgeNotesList notes={notes} />
+            <KnowledgeNotesList notes={notes} redirectTo={notesRedirectTo} />
           ) : (
             <ul className="panel-list">
               <li className="panel-list-item">

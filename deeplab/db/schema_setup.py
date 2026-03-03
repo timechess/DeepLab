@@ -45,6 +45,48 @@ async def _fetch_table_columns(table_name: str) -> set[str]:
     return {str(item["column_name"]) for item in rows if item.get("column_name")}
 
 
+async def _fetch_column_type(
+    table_name: str,
+    column_name: str,
+) -> tuple[str, str] | None:
+    connection = Tortoise.get_connection("default")
+    rows = await connection.execute_query_dict(
+        "SELECT data_type, udt_name FROM information_schema.columns "
+        f"WHERE table_schema = current_schema() "
+        f"AND table_name = '{table_name}' "
+        f"AND column_name = '{column_name}' "
+        "LIMIT 1"
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return str(row.get("data_type") or ""), str(row.get("udt_name") or "")
+
+
+def _default_expression_for_column_type(data_type: str, udt_name: str) -> str | None:
+    normalized_data_type = data_type.strip().lower()
+    normalized_udt_name = udt_name.strip().lower()
+
+    if normalized_udt_name in {"jsonb", "json"} or normalized_data_type in {"jsonb", "json"}:
+        cast = "jsonb" if normalized_udt_name == "jsonb" or normalized_data_type == "jsonb" else "json"
+        return f"'{{}}'::{cast}"
+
+    if normalized_udt_name in {"text", "varchar", "bpchar"} or normalized_data_type in {
+        "text",
+        "character varying",
+        "character",
+    }:
+        return "''"
+
+    if normalized_udt_name in {"bool"} or normalized_data_type == "boolean":
+        return "FALSE"
+
+    if normalized_udt_name in {"int2", "int4", "int8", "float4", "float8", "numeric"}:
+        return "0"
+
+    return None
+
+
 async def normalize_knowledge_note_schema_columns() -> None:
     connection = Tortoise.get_connection("default")
     for table_name, mappings in _NOTE_SCHEMA_COMPATIBILITY_RENAMES.items():
@@ -114,6 +156,36 @@ async def ensure_knowledge_note_schema_columns() -> None:
         )
         logger.info("Added missing note column: knowledge_notes.%s", column_name)
 
+    # Backward compatibility: some old deployments still have a NOT NULL "snapshot"
+    # column without default, which causes inserts to fail.
+    if "snapshot" in note_columns:
+        snapshot_type = await _fetch_column_type("knowledge_notes", "snapshot")
+        if snapshot_type is None:
+            logger.warning("Unable to read legacy column type: knowledge_notes.snapshot")
+        else:
+            default_expression = _default_expression_for_column_type(*snapshot_type)
+            if default_expression is None:
+                logger.warning(
+                    "Unsupported legacy column type for knowledge_notes.snapshot: data_type=%s, udt_name=%s",
+                    snapshot_type[0],
+                    snapshot_type[1],
+                )
+            else:
+                await connection.execute_script(
+                    "ALTER TABLE \"knowledge_notes\" "
+                    f"ALTER COLUMN \"snapshot\" SET DEFAULT {default_expression};"
+                )
+                await connection.execute_script(
+                    "UPDATE \"knowledge_notes\" "
+                    f"SET \"snapshot\" = {default_expression} "
+                    "WHERE \"snapshot\" IS NULL;"
+                )
+                logger.info(
+                    "Patched legacy column default: knowledge_notes.snapshot (data_type=%s, udt_name=%s)",
+                    snapshot_type[0],
+                    snapshot_type[1],
+                )
+
     link_columns = await _fetch_table_columns("knowledge_note_links")
     link_column_ddl: dict[str, str] = {
         "source_note_id": "UUID",
@@ -147,4 +219,3 @@ async def ensure_knowledge_note_schema_columns() -> None:
         'CREATE UNIQUE INDEX IF NOT EXISTS "uidx_knowledge_note_links_source_target" '
         'ON "knowledge_note_links" ("source_note_id", "target_type", "target_id");'
     )
-

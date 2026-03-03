@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import {
   createKnowledgeQuestion,
   createScreeningRule,
+  deleteKnowledgeNote,
   deleteKnowledgeQuestion,
   deleteRuntimeSetting,
   deleteScreeningRule,
@@ -400,6 +401,28 @@ export async function deleteKnowledgeQuestionAction(questionId: string, formData
       nextLocation,
       'notice',
       `问题已删除，同时删除方案 ${result.deletedSolutions} 条。`,
+    );
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(nextLocation, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function deleteKnowledgeNoteAction(noteId: string, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/knowledge?view=notes');
+  let nextLocation: string;
+
+  try {
+    const result = await deleteKnowledgeNote(noteId);
+    revalidatePath('/knowledge');
+    revalidatePath(`/knowledge/notes/${noteId}/edit`);
+    nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));
+    nextLocation = withQuery(
+      nextLocation,
+      'notice',
+      `笔记已删除，同时移除出链 ${result.deletedOutgoingLinks} 条、入链 ${result.deletedIncomingLinks} 条。`,
     );
   } catch (error) {
     nextLocation = withQuery(redirectTo, '_ts', String(Date.now()));

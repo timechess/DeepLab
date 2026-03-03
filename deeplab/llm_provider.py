@@ -1,10 +1,15 @@
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+try:
+    import httpx
+except Exception:  # pragma: no cover - fallback for environments without httpx
+    httpx = None
 from google import genai
 from google.genai import types as genai_types
 
@@ -25,6 +30,14 @@ from deeplab.runtime_settings import (
 
 LLM_PROVIDER_GOOGLE = "google-genai"
 LLM_PROVIDER_OPENAI_COMPATIBLE = "openai-compatible"
+LLM_NETWORK_MAX_RETRIES = 3
+LLM_NETWORK_RETRY_BASE_SECONDS = 1.0
+
+logger = logging.getLogger(__name__)
+
+
+class LLMNetworkError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -177,6 +190,31 @@ def _extract_openai_completion_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+
+    return chain
+
+
+def _is_network_related_exception(exc: Exception) -> bool:
+    for current in _iter_exception_chain(exc):
+        if isinstance(current, LLMNetworkError):
+            return True
+        if isinstance(current, (urllib_error.URLError, TimeoutError, ConnectionError)):
+            return True
+        if httpx is not None and isinstance(current, httpx.RequestError):
+            return True
+    return False
+
+
 def _google_invoke_sync(
     *,
     settings: LLMRuntimeSettings,
@@ -247,7 +285,7 @@ def _openai_compatible_invoke_sync(
 
     started = time.perf_counter()
     try:
-        with urllib_request.urlopen(req, timeout=120) as response:
+        with urllib_request.urlopen(req, timeout=300) as response:
             raw_text = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="ignore")
@@ -255,7 +293,7 @@ def _openai_compatible_invoke_sync(
             f"OpenAI compatible API 请求失败: POST {url}, status={exc.code}, body={err_body[:2000]}"
         ) from exc
     except urllib_error.URLError as exc:
-        raise RuntimeError(f"OpenAI compatible API 请求失败: {exc}") from exc
+        raise LLMNetworkError(f"OpenAI compatible API 网络请求失败: {exc}") from exc
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -279,18 +317,40 @@ def invoke_llm_sync(
     temperature: float,
     response_mime_type: str,
 ) -> tuple[str, dict[str, Any], int]:
-    if settings.provider == LLM_PROVIDER_GOOGLE:
-        return _google_invoke_sync(
-            settings=settings,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            response_mime_type=response_mime_type,
-        )
+    last_exc: Exception | None = None
+    total_attempts = LLM_NETWORK_MAX_RETRIES + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            if settings.provider == LLM_PROVIDER_GOOGLE:
+                return _google_invoke_sync(
+                    settings=settings,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=temperature,
+                    response_mime_type=response_mime_type,
+                )
 
-    return _openai_compatible_invoke_sync(
-        settings=settings,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        temperature=temperature,
-    )
+            return _openai_compatible_invoke_sync(
+                settings=settings,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= total_attempts or not _is_network_related_exception(exc):
+                raise
+            retry_count = attempt
+            sleep_seconds = LLM_NETWORK_RETRY_BASE_SECONDS * (2 ** (retry_count - 1))
+            logger.warning(
+                "LLM 网络请求失败，准备第 %s/%s 次重试，%.1f 秒后重试。错误: %s",
+                retry_count,
+                LLM_NETWORK_MAX_RETRIES,
+                sleep_seconds,
+                exc,
+            )
+            time.sleep(sleep_seconds)
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("LLM 请求重试失败，且未捕获到具体异常。")
