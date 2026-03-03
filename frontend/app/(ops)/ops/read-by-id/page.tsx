@@ -23,7 +23,7 @@ export default async function ReadByArxivIdPage({
         <div>
           <h2 className="page-title">运营后台 · 按编号精读</h2>
           <p className="page-subtitle">
-            输入 arXiv ID（如 <code>2602.22766</code> 或 <code>cs.CL/0101010</code>）生成精读报告。
+            输入 arXiv ID、arXiv PDF URL，或可直接下载的 PDF URL 生成精读报告。
           </p>
         </div>
       </header>

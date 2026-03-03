@@ -202,8 +202,7 @@ def _build_arxiv_pdf_url(paper_id: str) -> str:
     return f"https://arxiv.org/pdf/{paper_id}"
 
 
-def _download_arxiv_pdf(paper_id: str, output_path: Path) -> None:
-    pdf_url = _build_arxiv_pdf_url(paper_id)
+def _download_pdf(pdf_url: str, output_path: Path) -> None:
     req = request.Request(
         url=pdf_url,
         method="GET",
@@ -212,7 +211,7 @@ def _download_arxiv_pdf(paper_id: str, output_path: Path) -> None:
     with request.urlopen(req, timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS) as response:
         status = getattr(response, "status", response.getcode())
         if status != 200:
-            raise RuntimeError(f"下载论文 PDF 失败: {paper_id}, HTTP {status}")
+            raise RuntimeError(f"下载论文 PDF 失败: {pdf_url}, HTTP {status}")
 
         with output_path.open("wb") as fp:
             while True:
@@ -220,6 +219,13 @@ def _download_arxiv_pdf(paper_id: str, output_path: Path) -> None:
                 if not chunk:
                     break
                 fp.write(chunk)
+
+
+def _resolve_paper_pdf_url(paper: Paper, paper_pdf_url_by_id: dict[str, str]) -> str:
+    candidate = str(paper_pdf_url_by_id.get(paper.id, "") or "").strip()
+    if candidate:
+        return candidate
+    return _build_arxiv_pdf_url(paper.id)
 
 
 def _build_stage1_prompts(
@@ -417,6 +423,7 @@ async def _generate_text(
 
 async def _read_single_paper(
     paper: Paper,
+    pdf_url: str,
     llm_settings: LLMRuntimeSettings,
     ocr_settings: MistralOCRSettings | None,
     stage1_system_prompt_template: str,
@@ -435,7 +442,7 @@ async def _read_single_paper(
 
     with TemporaryDirectory(prefix="deeplab-paper-read-", dir="/tmp") as tmp_dir:
         pdf_path = Path(tmp_dir) / f"{paper.id}.pdf"
-        await asyncio.to_thread(_download_arxiv_pdf, paper.id, pdf_path)
+        await asyncio.to_thread(_download_pdf, pdf_url, pdf_path)
 
         ocr_text, ocr_metadata = await extract_pdf_text(
             pdf_path=pdf_path,
@@ -467,7 +474,7 @@ async def _read_single_paper(
                 "google_thinking_level": llm_settings.google_thinking_level,
                 "paper_id": paper.id,
                 "paper_title": paper.title,
-                "pdf_url": _build_arxiv_pdf_url(paper.id),
+                "pdf_url": pdf_url,
                 "ocr_provider": ocr_provider,
                 "ocr_model": ocr_model,
                 "ocr_page_count": ocr_metadata.get("page_count"),
@@ -528,7 +535,7 @@ async def _read_single_paper(
                 "google_thinking_level": llm_settings.google_thinking_level,
                 "paper_id": paper.id,
                 "paper_title": paper.title,
-                "pdf_url": _build_arxiv_pdf_url(paper.id),
+                "pdf_url": pdf_url,
                 "ocr_provider": ocr_provider,
                 "ocr_model": ocr_model,
                 "ocr_page_count": ocr_metadata.get("page_count"),
@@ -618,6 +625,15 @@ async def run_paper_reading(
     task_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_metadata = task_metadata or {}
+    paper_pdf_url_by_id: dict[str, str] = {}
+    raw_pdf_url_map = task_metadata.get("paperPdfUrlMap")
+    if isinstance(raw_pdf_url_map, dict):
+        for key, value in raw_pdf_url_map.items():
+            paper_id = str(key or "").strip()
+            pdf_url = str(value or "").strip()
+            if paper_id and pdf_url:
+                paper_pdf_url_by_id[paper_id] = pdf_url
+
     papers, source_run = await _resolve_target_papers(paper_ids, source_filtering_run)
     paper_ids_in_order = [paper.id for paper in papers]
     paper_title_by_id = {paper.id: paper.title for paper in papers}
@@ -708,6 +724,7 @@ async def run_paper_reading(
             try:
                 result = await _read_single_paper(
                     paper=paper,
+                    pdf_url=_resolve_paper_pdf_url(paper, paper_pdf_url_by_id),
                     llm_settings=llm_settings,
                     ocr_settings=ocr_settings,
                     stage1_system_prompt_template=stage1_system_prompt_template,

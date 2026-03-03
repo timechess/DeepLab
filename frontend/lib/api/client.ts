@@ -144,11 +144,38 @@ async function backendFetch<T>(
   return schema.parse(payload) as T;
 }
 
-export function getWorkflowRuns(limit = 20): Promise<WorkflowRun[]> {
+export function getWorkflowRuns(
+  options:
+    | number
+    | {
+        limit?: number;
+        offset?: number;
+        status?: string;
+      } = 20,
+): Promise<WorkflowRun[]> {
+  const normalized =
+    typeof options === 'number'
+      ? { limit: options }
+      : {
+          limit: options.limit ?? 20,
+          offset: options.offset,
+          status: options.status,
+        };
   return backendFetch<WorkflowRun[]>('/workflow_runs', {
-    query: { limit },
+    query: normalized,
     schema: z.array(workflowRunSchema),
   });
+}
+
+export function getWorkflowRunsCount({
+  status,
+}: {
+  status?: string;
+} = {}): Promise<number> {
+  return backendFetch<{ total: number }>('/workflow_runs/count', {
+    query: { status },
+    schema: z.object({ total: z.number().int().nonnegative() }),
+  }).then((payload) => payload.total);
 }
 
 export function getWorkflowRun(id: string): Promise<WorkflowRunDetail> {
@@ -189,11 +216,21 @@ export function triggerReadPapers(): Promise<ReadResult> {
   });
 }
 
-export function triggerReadPaperByArxivId(paperId: string): Promise<ReadByArxivIdResult> {
+export function triggerReadPaperByArxivId(
+  paperId: string,
+  paperMetadata?: {
+    title: string;
+    authors: string[];
+    summary: string;
+    organization?: string;
+    publishedAt?: string;
+    aiKeywords?: string[];
+  },
+): Promise<ReadByArxivIdResult> {
   return backendFetch<ReadByArxivIdResult>('/read_papers/by_arxiv_id', {
     method: 'POST',
     schema: readByArxivIdResultSchema,
-    body: { paperId },
+    body: paperMetadata ? { paperId, paperMetadata } : { paperId },
     timeoutMs: 120000,
   });
 }
@@ -262,21 +299,52 @@ export function deleteScreeningRule(ruleId: number): Promise<{ deleted: boolean 
 
 export function getReadingReports({
   limit = 20,
+  offset,
   paperId,
+  paperTitle,
+  commentStatus,
   todayOnly,
 }: {
   limit?: number;
+  offset?: number;
   paperId?: string;
+  paperTitle?: string;
+  commentStatus?: 'commented' | 'uncommented';
   todayOnly?: boolean;
 } = {}): Promise<ReadingReport[]> {
   return backendFetch<ReadingReport[]>('/reading_reports', {
     query: {
       limit,
+      offset,
       paper_id: paperId,
+      paper_title: paperTitle,
+      comment_status: commentStatus,
       today_only: todayOnly,
     },
     schema: z.array(readingReportSchema),
   });
+}
+
+export function getReadingReportsCount({
+  paperId,
+  paperTitle,
+  commentStatus,
+  todayOnly,
+}: {
+  paperId?: string;
+  paperTitle?: string;
+  commentStatus?: 'commented' | 'uncommented';
+  todayOnly?: boolean;
+} = {}): Promise<number> {
+  return backendFetch<{ total: number }>('/reading_reports/count', {
+    query: {
+      paper_id: paperId,
+      paper_title: paperTitle,
+      comment_status: commentStatus,
+      today_only: todayOnly,
+    },
+    schema: z.object({ total: z.number().int().nonnegative() }),
+  }).then((payload) => payload.total);
 }
 
 export function getReadingReport(reportId: string): Promise<ReadingReport> {

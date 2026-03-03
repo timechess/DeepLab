@@ -259,6 +259,10 @@ export const readByArxivIdResultSchema = z.object({
   workflow_id: z.string().uuid().nullable(),
   report_id: z.string().uuid().nullable(),
   deduplicated: z.boolean(),
+  requires_metadata: z.boolean().optional(),
+  resolved_input_type: z.enum(['arxiv', 'pdf_url']).optional(),
+  resolved_pdf_url: z.string().url().optional(),
+  metadata_source: z.string().optional(),
   message: z.string(),
 });
 
