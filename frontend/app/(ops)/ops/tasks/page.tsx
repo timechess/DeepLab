@@ -16,8 +16,7 @@ export default async function TasksPage({
     <section className="page">
       <header className="page-header">
         <div>
-          <h2 className="page-title">运营后台 · 任务管理</h2>
-          <p className="page-subtitle">创建任务并追踪完成状态，支持完成/取消完成与删除。</p>
+          <h2 className="page-title">任务管理</h2>
         </div>
       </header>
 

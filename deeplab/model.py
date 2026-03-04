@@ -697,6 +697,11 @@ class DailyWorkReport(Model):
         source_field="sourceMarkdown",
         description="Collected previous-day activity markdown",
     )
+    activity_summary = fields.JSONField(
+        default=dict,
+        source_field="activitySummary",
+        description="Structured activity summary for dashboard/detail pages",
+    )
     report_markdown = fields.TextField(
         default="",
         source_field="reportMarkdown",
@@ -721,3 +726,37 @@ class DailyWorkReport(Model):
     class Meta:
         table = "daily_work_reports"
         ordering = ["-business_date", "-updated_at"]
+
+
+class DailyWorkNoteSnapshot(Model):
+    id = fields.UUIDField(pk=True, description="Daily work note snapshot ID")
+    note = fields.OneToOneField(
+        "models.KnowledgeNote",
+        related_name="daily_work_snapshot",
+        source_field="noteId",
+    )
+    snapshot_markdown = fields.TextField(
+        default="",
+        source_field="snapshotMarkdown",
+        description="Knowledge note markdown snapshot captured at report generation",
+    )
+    note_updated_at = fields.DatetimeField(
+        source_field="noteUpdatedAt",
+        index=True,
+        description="Knowledge note updated_at value when snapshot captured",
+    )
+    snapshot_updated_at = fields.DatetimeField(
+        auto_now=True,
+        source_field="snapshotUpdatedAt",
+        index=True,
+        description="When this snapshot was last refreshed",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="createdAt",
+        index=True,
+    )
+
+    class Meta:
+        table = "daily_work_note_snapshots"
+        ordering = ["-snapshot_updated_at", "-created_at"]

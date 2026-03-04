@@ -72,8 +72,7 @@ export default async function OpsReportsPage({
     <section className="page">
       <header className="page-header">
         <div>
-          <h2 className="page-title">运营后台 · 报告管理</h2>
-          <p className="page-subtitle">按论文标题搜索报告，并按评论状态筛选。</p>
+          <h2 className="page-title">精读报告管理</h2>
         </div>
       </header>
 

@@ -202,7 +202,18 @@ def _daily_work_report_to_dict(
     include_source: bool = False,
 ) -> dict[str, Any]:
     source_markdown = str(report.source_markdown or "")
+    activity_summary = report.activity_summary if isinstance(report.activity_summary, dict) else {}
     behavior_counts = _extract_daily_work_behavior_counts(source_markdown)
+    summary_counts = activity_summary.get("counts")
+    if isinstance(summary_counts, dict):
+        behavior_counts = {
+            "reportComments": int(summary_counts.get("reportComments") or 0),
+            "openTasks": int(summary_counts.get("openTasks") or 0),
+            "createdTasks": int(summary_counts.get("createdTasks") or 0),
+            "completedTasks": int(summary_counts.get("completedTasks") or 0),
+            "changedNotes": int(summary_counts.get("changedNotes") or 0),
+            "yesterdayActivityCount": int(summary_counts.get("yesterdayActivityCount") or 0),
+        }
     workflow = report.workflow if hasattr(report, "workflow") else None
     data = {
         "id": str(report.id),
@@ -214,6 +225,7 @@ def _daily_work_report_to_dict(
         "status": report.status,
         "reportMarkdown": report.report_markdown,
         "behaviorCounts": behavior_counts,
+        "behaviorSummary": activity_summary,
         "errorMessage": report.error_message,
         "createdAt": report.created_at.isoformat(),
         "updatedAt": report.updated_at.isoformat(),
@@ -235,11 +247,23 @@ def _extract_daily_work_section_count(source_markdown: str, section_title: str) 
 
 
 def _extract_daily_work_behavior_counts(source_markdown: str) -> dict[str, int]:
-    report_comments = _extract_daily_work_section_count(source_markdown, "论文精读报告评论")
+    report_comments = max(
+        _extract_daily_work_section_count(source_markdown, "论文精读报告评论"),
+        _extract_daily_work_section_count(source_markdown, "增量论文精读报告评论"),
+    )
     open_tasks = _extract_daily_work_section_count(source_markdown, "当前未完成任务")
-    created_tasks = _extract_daily_work_section_count(source_markdown, "前一日新建任务")
-    completed_tasks = _extract_daily_work_section_count(source_markdown, "前一日完成任务")
-    changed_notes = _extract_daily_work_section_count(source_markdown, "前一日创建或编辑笔记")
+    created_tasks = max(
+        _extract_daily_work_section_count(source_markdown, "前一日新建任务"),
+        _extract_daily_work_section_count(source_markdown, "增量新建任务"),
+    )
+    completed_tasks = max(
+        _extract_daily_work_section_count(source_markdown, "前一日完成任务"),
+        _extract_daily_work_section_count(source_markdown, "增量完成任务"),
+    )
+    changed_notes = max(
+        _extract_daily_work_section_count(source_markdown, "前一日创建或编辑笔记"),
+        _extract_daily_work_section_count(source_markdown, "增量创建或编辑笔记"),
+    )
     yesterday_activity = report_comments + created_tasks + completed_tasks + changed_notes
     return {
         "reportComments": report_comments,

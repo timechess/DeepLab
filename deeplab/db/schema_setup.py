@@ -219,3 +219,117 @@ async def ensure_knowledge_note_schema_columns() -> None:
         'CREATE UNIQUE INDEX IF NOT EXISTS "uidx_knowledge_note_links_source_target" '
         'ON "knowledge_note_links" ("source_note_id", "target_type", "target_id");'
     )
+
+
+async def ensure_daily_work_report_schema_columns() -> None:
+    """Ensure daily work report tables/columns exist before model schema sync.
+
+    We run this guard because existing deployments may already have the
+    `daily_work_reports` table but lack newly added columns (for example
+    `activitySummary`), which can cause startup-time schema generation to fail.
+    """
+    connection = Tortoise.get_connection("default")
+    await connection.execute_script(
+        """
+        CREATE TABLE IF NOT EXISTS "daily_work_reports" (
+            "id" UUID NOT NULL PRIMARY KEY,
+            "workflowId" UUID,
+            "businessDate" VARCHAR(10) NOT NULL UNIQUE,
+            "sourceDate" VARCHAR(10) NOT NULL,
+            "status" VARCHAR(32) NOT NULL DEFAULT 'succeeded',
+            "sourceMarkdown" TEXT NOT NULL DEFAULT '',
+            "activitySummary" JSONB NOT NULL DEFAULT '{}'::jsonb,
+            "reportMarkdown" TEXT NOT NULL DEFAULT '',
+            "errorMessage" TEXT,
+            "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+    report_columns = await _fetch_table_columns("daily_work_reports")
+    report_column_ddl: dict[str, str] = {
+        "workflowId": "UUID",
+        "businessDate": "VARCHAR(10) NOT NULL DEFAULT ''",
+        "sourceDate": "VARCHAR(10) NOT NULL DEFAULT ''",
+        "status": "VARCHAR(32) NOT NULL DEFAULT 'succeeded'",
+        "sourceMarkdown": "TEXT NOT NULL DEFAULT ''",
+        "activitySummary": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+        "reportMarkdown": "TEXT NOT NULL DEFAULT ''",
+        "errorMessage": "TEXT",
+        "createdAt": "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "updatedAt": "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    }
+    for column_name, ddl in report_column_ddl.items():
+        if column_name in report_columns:
+            continue
+        await connection.execute_script(
+            f'ALTER TABLE "daily_work_reports" ADD COLUMN "{column_name}" {ddl};'
+        )
+        logger.info("Added missing daily work report column: daily_work_reports.%s", column_name)
+
+    await connection.execute_script(
+        'CREATE UNIQUE INDEX IF NOT EXISTS "uidx_daily_work_reports_business_date" '
+        'ON "daily_work_reports" ("businessDate");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_reports_status" '
+        'ON "daily_work_reports" ("status");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_reports_created_at" '
+        'ON "daily_work_reports" ("createdAt");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_reports_updated_at" '
+        'ON "daily_work_reports" ("updatedAt");'
+    )
+
+    await connection.execute_script(
+        """
+        CREATE TABLE IF NOT EXISTS "daily_work_note_snapshots" (
+            "id" UUID NOT NULL PRIMARY KEY,
+            "noteId" UUID NOT NULL UNIQUE,
+            "snapshotMarkdown" TEXT NOT NULL DEFAULT '',
+            "noteUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "snapshotUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+    snapshot_columns = await _fetch_table_columns("daily_work_note_snapshots")
+    snapshot_column_ddl: dict[str, str] = {
+        "noteId": "UUID NOT NULL",
+        "snapshotMarkdown": "TEXT NOT NULL DEFAULT ''",
+        "noteUpdatedAt": "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "snapshotUpdatedAt": "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "createdAt": "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    }
+    for column_name, ddl in snapshot_column_ddl.items():
+        if column_name in snapshot_columns:
+            continue
+        await connection.execute_script(
+            f'ALTER TABLE "daily_work_note_snapshots" ADD COLUMN "{column_name}" {ddl};'
+        )
+        logger.info(
+            "Added missing daily work note snapshot column: daily_work_note_snapshots.%s",
+            column_name,
+        )
+
+    await connection.execute_script(
+        'CREATE UNIQUE INDEX IF NOT EXISTS "uidx_daily_work_note_snapshots_note_id" '
+        'ON "daily_work_note_snapshots" ("noteId");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_note_snapshots_note_updated_at" '
+        'ON "daily_work_note_snapshots" ("noteUpdatedAt");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_note_snapshots_snapshot_updated_at" '
+        'ON "daily_work_note_snapshots" ("snapshotUpdatedAt");'
+    )
+    await connection.execute_script(
+        'CREATE INDEX IF NOT EXISTS "idx_daily_work_note_snapshots_created_at" '
+        'ON "daily_work_note_snapshots" ("createdAt");'
+    )

@@ -50,6 +50,7 @@ from deeplab.daily_papers.paper_reading import (
     run_paper_reading,
 )
 from deeplab.db.schema_setup import (
+    ensure_daily_work_report_schema_columns,
     ensure_knowledge_note_schema_columns,
     normalize_knowledge_note_schema_columns,
 )
@@ -143,6 +144,7 @@ async def lifespan(app: FastAPI):
     ):
         await normalize_knowledge_note_schema_columns()
         await ensure_knowledge_note_schema_columns()
+        await ensure_daily_work_report_schema_columns()
         await Tortoise.generate_schemas(safe=True)
         yield
 
@@ -975,11 +977,16 @@ async def count_daily_work_reports(
 
 @app.get("/daily_work_reports/activity_preview")
 async def get_daily_work_reports_activity_preview() -> dict[str, Any]:
+    """Preview daily work activity counts before triggering report generation.
+
+    Important: this preview follows delta semantics (current DB state compared
+    with the latest daily-work collect snapshot), not strict "yesterday only".
+    """
     try:
         return await get_previous_day_activity_preview()
     except Exception as exc:
-        logger.exception("Preview previous-day activity failed")
-        raise HTTPException(status_code=500, detail="Failed to preview previous-day activity") from exc
+        logger.exception("Preview daily work activity delta failed")
+        raise HTTPException(status_code=500, detail="Failed to preview daily work activity delta") from exc
 
 
 @app.get("/daily_work_reports/{report_id}")
@@ -1075,6 +1082,11 @@ async def trigger_daily_workflow_api() -> dict[str, str]:
 @app.post("/workflow_runs/daily_work_reports/trigger")
 @app.get("/workflow_runs/daily_work_reports/trigger")
 async def trigger_daily_work_report_workflow_api() -> dict[str, str]:
+    """Trigger AI daily work report workflow.
+
+    The workflow collects user behavior as deltas since the latest successful
+    collect snapshot, then generates report markdown with that delta context.
+    """
     workflow_id = await trigger_daily_work_report_workflow(
         trigger_type="manual",
         context={"manualTrigger": True},

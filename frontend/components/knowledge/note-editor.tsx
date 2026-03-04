@@ -17,7 +17,9 @@ import type {
   KnowledgeNoteDetail,
   KnowledgeNoteLink,
   KnowledgeNoteSummary,
+  ReadingReport,
 } from '@/lib/api/schemas';
+import { MarkdownRenderer } from '@/lib/markdown/renderer';
 import { InlineDisplayMathematics } from '@/lib/tiptap/mathematics';
 import { formatDateTime } from '@/lib/time';
 
@@ -68,6 +70,16 @@ type NoteMarkdownExportResult = {
   noteId: string;
   markdown: string;
 };
+
+type ReadingReportPreview = {
+  id: string;
+  paperId: string;
+  paperTitle: string;
+  markdown: string;
+  updatedAt: string;
+};
+
+type ReadingReportPreviewMode = 'rendered' | 'markdown';
 
 const SAVE_DEBOUNCE_MS = 2300;
 const UNTITLED_NOTE_BASE = '未命名笔记';
@@ -355,6 +367,12 @@ export function NoteEditor({
   const [targetResults, setTargetResults] = useState<KnowledgeLinkTarget[]>([]);
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetError, setTargetError] = useState<string | null>(null);
+  const [readingReportModalOpen, setReadingReportModalOpen] = useState(false);
+  const [readingReportPreview, setReadingReportPreview] = useState<ReadingReportPreview | null>(null);
+  const [readingReportLoading, setReadingReportLoading] = useState(false);
+  const [readingReportLoadingId, setReadingReportLoadingId] = useState<string | null>(null);
+  const [readingReportError, setReadingReportError] = useState<string | null>(null);
+  const [readingReportMode, setReadingReportMode] = useState<ReadingReportPreviewMode>('rendered');
 
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef(false);
@@ -364,6 +382,7 @@ export function NoteEditor({
   const noteTitleRef = useRef(noteTitle);
   const defaultUntitledTitleRef = useRef(defaultUntitledTitle);
   const latestDocRef = useRef<Record<string, unknown>>(initialDoc);
+  const readingReportRequestRef = useRef(0);
   const snapshotRef = useRef(
     JSON.stringify({
       title: (initialNote?.title || UNTITLED_NOTE_BASE).trim(),
@@ -502,6 +521,60 @@ export function NoteEditor({
     },
     [closeSlashMenu],
   );
+
+  const closeReadingReportModal = useCallback(() => {
+    readingReportRequestRef.current += 1;
+    setReadingReportModalOpen(false);
+    setReadingReportLoading(false);
+    setReadingReportLoadingId(null);
+    setReadingReportMode('rendered');
+  }, []);
+
+  const openReadingReportModal = useCallback(async (reportId: string) => {
+    const resolvedReportId = reportId.trim();
+    if (!resolvedReportId) {
+      return;
+    }
+
+    const requestId = readingReportRequestRef.current + 1;
+    readingReportRequestRef.current = requestId;
+    setReadingReportModalOpen(true);
+    setReadingReportLoading(true);
+    setReadingReportLoadingId(resolvedReportId);
+    setReadingReportPreview(null);
+    setReadingReportError(null);
+    setReadingReportMode('rendered');
+
+    try {
+      const report = await apiBackendFetch<ReadingReport>(`reading_reports/${resolvedReportId}`);
+      if (readingReportRequestRef.current !== requestId) {
+        return;
+      }
+      const markdown =
+        (report.fullReport && report.fullReport.trim()) ||
+        (report.stage2Content && report.stage2Content.trim()) ||
+        '暂无报告内容。';
+      setReadingReportPreview({
+        id: report.id,
+        paperId: report.paperId,
+        paperTitle: (report.paperTitle || report.paperMeta?.title || '').trim() || report.paperId,
+        markdown,
+        updatedAt: report.updatedAt,
+      });
+      setReadingReportError(null);
+    } catch (error) {
+      if (readingReportRequestRef.current !== requestId) {
+        return;
+      }
+      setReadingReportPreview(null);
+      setReadingReportError(error instanceof Error ? error.message : '加载精读报告失败。');
+    } finally {
+      if (readingReportRequestRef.current === requestId) {
+        setReadingReportLoading(false);
+        setReadingReportLoadingId(null);
+      }
+    }
+  }, []);
 
   const flushSave = useCallback(
     async (force = false) => {
@@ -791,6 +864,27 @@ export function NoteEditor({
   }, []);
 
   useEffect(() => {
+    if (!readingReportModalOpen) {
+      return;
+    }
+
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeReadingReportModal();
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeydown);
+    return () => {
+      window.removeEventListener('keydown', onKeydown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [closeReadingReportModal, readingReportModalOpen]);
+
+  useEffect(() => {
     const onKeydown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
@@ -979,8 +1073,9 @@ export function NoteEditor({
   const incomingCount = incomingLinks.length;
 
   return (
-    <div className={`note-editor-layout${focusMode ? ' note-editor-layout-focus' : ''}`}>
-      <section className="note-editor-main">
+    <>
+      <div className={`note-editor-layout${focusMode ? ' note-editor-layout-focus' : ''}`}>
+        <section className="note-editor-main">
         <div className="note-editor-meta">
           <div className="note-editor-status-group">
             <span className={`note-save-badge note-save-${saveState}`}>
@@ -1152,8 +1247,8 @@ export function NoteEditor({
         </div>
       </section>
 
-      {!focusMode ? (
-        <aside className="note-editor-sidebar">
+        {!focusMode ? (
+          <aside className="note-editor-sidebar">
           {(['paper', 'question', 'task', 'note'] as LinkTargetType[]).map((targetType) => {
             const links = groupedLinks[targetType];
             return (
@@ -1166,16 +1261,24 @@ export function NoteEditor({
                     const href = targetHref(link.targetType, link.targetId);
                     const label = normalizeLinkLabel(link);
                     const isPaper = link.targetType === 'paper';
+                    const readingReportId = link.readingReportId || '';
                     return (
                       <li className="note-link-item" key={link.id}>
                         <p className="note-link-meta">{formatDateTime(link.createdAt)}</p>
                         <p className="note-link-title">{label}</p>
                         {isPaper ? (
                           <div className="note-link-chip-row">
-                            {link.readingReportId ? (
-                              <NextLink className="note-link-chip" href={`/reports/${link.readingReportId}`}>
-                                精读报告
-                              </NextLink>
+                            {readingReportId ? (
+                              <button
+                                className="note-link-chip note-link-chip-button"
+                                disabled={readingReportLoading && readingReportLoadingId === readingReportId}
+                                onClick={() => void openReadingReportModal(readingReportId)}
+                                type="button"
+                              >
+                                {readingReportLoading && readingReportLoadingId === readingReportId
+                                  ? '加载中…'
+                                  : '精读报告'}
+                              </button>
                             ) : null}
                             <a className="note-link-chip" href={href} rel="noreferrer" target="_blank">
                               arXiv
@@ -1212,8 +1315,86 @@ export function NoteEditor({
               {incomingCount === 0 ? <li className="note-link-empty">暂无反向链接</li> : null}
             </ul>
           </section>
-        </aside>
+          </aside>
+        ) : null}
+      </div>
+
+      {readingReportModalOpen ? (
+        <div
+          className="note-report-modal-backdrop"
+          onClick={closeReadingReportModal}
+        >
+          <section
+            aria-label="论文精读报告预览"
+            aria-modal="true"
+            className="note-report-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <header className="note-report-modal-header">
+              <div className="note-report-modal-heading">
+                <p className="panel-kicker">论文精读报告</p>
+                <h3 className="note-report-modal-title">
+                  {readingReportPreview?.paperTitle || '加载中…'}
+                </h3>
+                {readingReportPreview ? (
+                  <p className="note-report-modal-subtitle">
+                    {readingReportPreview.paperId} · 更新于{' '}
+                    {formatDateTime(readingReportPreview.updatedAt)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="note-report-modal-actions">
+                <div className="note-report-view-tabs">
+                  <button
+                    className={`note-report-view-tab${
+                      readingReportMode === 'rendered' ? ' note-report-view-tab-active' : ''
+                    }`}
+                    onClick={() => setReadingReportMode('rendered')}
+                    type="button"
+                  >
+                    渲染视图
+                  </button>
+                  <button
+                    className={`note-report-view-tab${
+                      readingReportMode === 'markdown' ? ' note-report-view-tab-active' : ''
+                    }`}
+                    onClick={() => setReadingReportMode('markdown')}
+                    type="button"
+                  >
+                    Markdown
+                  </button>
+                </div>
+                <button
+                  className="button button-secondary note-save-btn"
+                  onClick={closeReadingReportModal}
+                  type="button"
+                >
+                  关闭
+                </button>
+              </div>
+            </header>
+
+            <div className="note-report-modal-body">
+              {readingReportLoading ? <p className="page-subtitle">加载精读报告中…</p> : null}
+              {readingReportError ? <p className="notice notice-error">{readingReportError}</p> : null}
+
+              {!readingReportLoading && !readingReportError && readingReportPreview ? (
+                readingReportMode === 'rendered' ? (
+                  <div className="note-report-render-panel">
+                    <MarkdownRenderer content={readingReportPreview.markdown} />
+                  </div>
+                ) : (
+                  <div className="note-report-markdown-panel">
+                    <p className="note-report-markdown-tip">可直接选中文本并复制</p>
+                    <pre className="note-report-markdown-raw">{readingReportPreview.markdown}</pre>
+                  </div>
+                )
+              ) : null}
+            </div>
+          </section>
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }

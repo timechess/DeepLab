@@ -1,16 +1,16 @@
 import asyncio
+import difflib
 import logging
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from tortoise.expressions import Q
-
 from deeplab.knowledge_base.note_service import knowledge_note_to_markdown
 from deeplab.llm_provider import LLMRuntimeSettings, get_llm_runtime_settings, invoke_llm_sync
 from deeplab.model import (
     DailyWorkReport,
+    DailyWorkNoteSnapshot,
     KnowledgeNote,
     KnowledgeNoteLink,
     KnowledgeQuestion,
@@ -56,16 +56,15 @@ DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE = """
 约束：
 1. 所有结论必须能在输入中找到依据，不得杜撰。
 2. 不要输出除上述三节外的其他大标题。
-3. 每节至少 3 条建议，尽量具体。
-4. 输出必须是 Markdown 正文，不要包裹代码围栏。
+3. 输出必须是 Markdown 正文，不要包裹代码围栏。
 
-【业务日期（北京时间）】
+【业务日期】
 {{BUSINESS_DATE}}
 
-【行为来源日期（北京时间，前一日）】
+【来源日期标记】
 {{SOURCE_DATE}}
 
-【用户行为汇总（Markdown）】
+【用户行为汇总】
 {{ACTIVITY_MARKDOWN}}
 """.strip()
 
@@ -220,28 +219,79 @@ def _format_label_line(title: str, labels: list[str]) -> str:
     return f"- {title}：{'；'.join(labels)}"
 
 
-def _note_change_action(note: KnowledgeNote, *, start_utc: datetime, end_utc: datetime) -> str:
-    created_in_window = start_utc <= note.created_at < end_utc
-    updated_in_window = start_utc <= note.updated_at < end_utc
-    if created_in_window and updated_in_window:
-        return "新建并编辑"
-    if created_in_window:
-        return "新建"
-    if updated_in_window:
-        return "编辑"
-    return "变更"
+def _iso_or_none(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _build_markdown_increment(previous: str, current: str, *, max_lines: int = 320) -> str:
+    previous_text = str(previous or "")
+    current_text = str(current or "")
+    if previous_text == current_text:
+        return ""
+
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_text.splitlines(),
+            current_text.splitlines(),
+            fromfile="snapshot",
+            tofile="current",
+            lineterm="",
+        )
+    )
+    if len(diff_lines) > max_lines:
+        kept = diff_lines[:max_lines]
+        kept.append(f"...（已截断，原始 diff 行数 {len(diff_lines)}）")
+        diff_lines = kept
+    return "```diff\n" + "\n".join(diff_lines) + "\n```"
+
+
+async def _resolve_activity_checkpoint_utc(
+    *,
+    fallback_start_utc: datetime,
+    exclude_workflow_id: uuid.UUID | None = None,
+) -> datetime:
+    """Resolve the baseline timestamp for activity delta collection.
+
+    Daily work activity is treated as a delta between:
+    1) current database state at trigger time, and
+    2) the most recent successful `collect_user_activity` stage.
+
+    This is intentionally not a strict "yesterday 00:00-24:00" window.
+    """
+    query = WorkflowStageExecution.filter(
+        stage=STAGE_COLLECT_USER_ACTIVITY,
+        status="succeeded",
+        workflow__workflow_name=WORKFLOW_NAME_DAILY_WORK_REPORTS,
+    )
+    if exclude_workflow_id is not None:
+        query = query.exclude(workflow_id=exclude_workflow_id)
+
+    latest_stage = await query.order_by("-finished_at", "-started_at").first()
+    if latest_stage is not None:
+        if latest_stage.finished_at is not None:
+            return latest_stage.finished_at
+        return latest_stage.started_at
+    return fallback_start_utc
 
 
 async def collect_previous_day_activity_markdown(
     *,
-    source_start_utc: datetime,
-    source_end_utc: datetime,
     source_date: str,
+    activity_since_utc: datetime,
+    collect_until_utc: datetime,
 ) -> dict[str, Any]:
+    """Collect behavior delta for daily work report generation.
+
+    The collection window is [activity_since_utc, collect_until_utc) for time-based
+    entities (comments/tasks). Notes are collected via snapshot diff, so they also
+    follow delta semantics relative to the last snapshot, not strict calendar day.
+    """
     comment_reports = (
         await PaperReadingReport.filter(
-            updated_at__gte=source_start_utc,
-            updated_at__lt=source_end_utc,
+            updated_at__gte=activity_since_utc,
+            updated_at__lt=collect_until_utc,
         )
         .exclude(comment="")
         .select_related("paper")
@@ -252,41 +302,114 @@ async def collect_previous_day_activity_markdown(
 
     open_tasks = await TodoTask.filter(is_completed=False).order_by("-created_at", "-id").all()
     created_tasks = (
-        await TodoTask.filter(created_at__gte=source_start_utc, created_at__lt=source_end_utc)
+        await TodoTask.filter(created_at__gte=activity_since_utc, created_at__lt=collect_until_utc)
         .order_by("-created_at", "-id")
         .all()
     )
     completed_tasks = (
-        await TodoTask.filter(completed_at__gte=source_start_utc, completed_at__lt=source_end_utc)
+        await TodoTask.filter(completed_at__gte=activity_since_utc, completed_at__lt=collect_until_utc)
         .order_by("-completed_at", "-id")
         .all()
     )
 
-    changed_notes = (
-        await KnowledgeNote.filter(
-            Q(created_at__gte=source_start_utc, created_at__lt=source_end_utc)
-            | Q(updated_at__gte=source_start_utc, updated_at__lt=source_end_utc)
+    all_notes = await KnowledgeNote.all().order_by("-updated_at").all()
+    snapshots = await DailyWorkNoteSnapshot.filter(note_id__in=[note.id for note in all_notes]).all()
+    snapshot_by_note_id = {str(snapshot.note_id): snapshot for snapshot in snapshots}
+
+    note_delta_candidates: list[dict[str, Any]] = []
+    for note in all_notes:
+        note_markdown = knowledge_note_to_markdown(note).strip()
+        snapshot = snapshot_by_note_id.get(str(note.id))
+        previous_markdown = str(snapshot.snapshot_markdown or "").strip() if snapshot else ""
+        if snapshot is not None and previous_markdown == note_markdown:
+            continue
+        is_new_snapshot = snapshot is None
+        increment_markdown = note_markdown if is_new_snapshot else _build_markdown_increment(
+            previous_markdown,
+            note_markdown,
         )
-        .order_by("-updated_at")
-        .all()
-    )
+        note_delta_candidates.append(
+            {
+                "note": note,
+                "snapshot": snapshot,
+                "isNewSnapshot": is_new_snapshot,
+                "currentMarkdown": note_markdown,
+                "incrementMarkdown": increment_markdown,
+            }
+        )
 
     note_links: list[KnowledgeNoteLink] = []
-    if changed_notes:
-        note_links = await KnowledgeNoteLink.filter(source_note_id__in=[note.id for note in changed_notes]).all()
+    if note_delta_candidates:
+        note_links = await KnowledgeNoteLink.filter(
+            source_note_id__in=[item["note"].id for item in note_delta_candidates]
+        ).all()
     links_by_note_id: dict[str, list[KnowledgeNoteLink]] = {}
     for link in note_links:
-        key = str(link.source_note_id)
-        links_by_note_id.setdefault(key, []).append(link)
+        links_by_note_id.setdefault(str(link.source_note_id), []).append(link)
 
     paper_title_by_id, question_text_by_id, task_title_by_id = await _build_note_target_label_maps(note_links)
 
+    changed_notes: list[dict[str, Any]] = []
+    for item in note_delta_candidates:
+        note = item["note"]
+        snapshot = item["snapshot"]
+        is_new_snapshot = bool(item["isNewSnapshot"])
+        snapshot_record: DailyWorkNoteSnapshot
+        if snapshot is None:
+            snapshot_record = await DailyWorkNoteSnapshot.create(
+                note=note,
+                snapshot_markdown=item["currentMarkdown"],
+                note_updated_at=note.updated_at,
+            )
+        else:
+            snapshot_refresh_at = datetime.now(tz=UTC)
+            snapshot.snapshot_markdown = item["currentMarkdown"]
+            snapshot.note_updated_at = note.updated_at
+            snapshot.snapshot_updated_at = snapshot_refresh_at
+            await snapshot.save(update_fields=["snapshot_markdown", "note_updated_at", "snapshot_updated_at"])
+            snapshot_record = snapshot
+
+        note_id = str(note.id)
+        related_links = links_by_note_id.get(note_id, [])
+        linked_papers = _resolve_note_target_labels(
+            related_links,
+            target_type="paper",
+            title_map=paper_title_by_id,
+        )
+        linked_questions = _resolve_note_target_labels(
+            related_links,
+            target_type="question",
+            title_map=question_text_by_id,
+        )
+        linked_tasks = _resolve_note_target_labels(
+            related_links,
+            target_type="task",
+            title_map=task_title_by_id,
+        )
+        changed_notes.append(
+            {
+                "noteId": note_id,
+                "title": note.title,
+                "changeType": "新建" if is_new_snapshot else "编辑",
+                "createdAt": note.created_at.isoformat(),
+                "updatedAt": note.updated_at.isoformat(),
+                "lastSnapshotUpdatedAt": _iso_or_none(snapshot.snapshot_updated_at) if snapshot else None,
+                "currentSnapshotUpdatedAt": snapshot_record.snapshot_updated_at.isoformat(),
+                "linkedPapers": linked_papers,
+                "linkedQuestions": linked_questions,
+                "linkedTasks": linked_tasks,
+                "incrementMarkdown": item["incrementMarkdown"],
+            }
+        )
+
     lines: list[str] = [
-        f"# 前一日用户行为汇总（{source_date}）",
+        f"# 用户行为增量汇总（来源日期标记：{source_date}）",
         "",
-        f"- 时间窗口（UTC）：{source_start_utc.isoformat()} ~ {source_end_utc.isoformat()}",
+        "- 说明：本报告按“当前数据库状态 vs 上次日报行为检索快照”的增量语义生成，并非严格按自然日统计。",
+        f"- 增量基线（UTC，上次日报检索完成时间）：{activity_since_utc.isoformat()}",
+        f"- 本次检索截止（UTC）：{collect_until_utc.isoformat()}",
         "",
-        f"## 论文精读报告评论（{len(comment_reports)}）",
+        f"## 增量论文精读报告评论（{len(comment_reports)}）",
     ]
 
     if comment_reports:
@@ -309,7 +432,7 @@ async def collect_previous_day_activity_markdown(
 
     lines.extend(
         [
-            f"## 前一日新建任务（{len(created_tasks)}）",
+            f"## 增量新建任务（{len(created_tasks)}）",
         ]
     )
     if created_tasks:
@@ -320,7 +443,7 @@ async def collect_previous_day_activity_markdown(
 
     lines.extend(
         [
-            f"## 前一日完成任务（{len(completed_tasks)}）",
+            f"## 增量完成任务（{len(completed_tasks)}）",
         ]
     )
     if completed_tasks:
@@ -331,41 +454,30 @@ async def collect_previous_day_activity_markdown(
 
     lines.extend(
         [
-            f"## 前一日创建或编辑笔记（{len(changed_notes)}）",
+            f"## 增量创建或编辑笔记（{len(changed_notes)}）",
         ]
     )
     if changed_notes:
-        for note in changed_notes:
-            note_id = str(note.id)
-            related_links = links_by_note_id.get(note_id, [])
-            linked_papers = _resolve_note_target_labels(
-                related_links,
-                target_type="paper",
-                title_map=paper_title_by_id,
+        for note_item in changed_notes:
+            increment_heading = (
+                "#### 笔记完整内容"
+                if note_item["changeType"] == "新建"
+                else "#### 笔记增量（相对上次日报快照）"
             )
-            linked_questions = _resolve_note_target_labels(
-                related_links,
-                target_type="question",
-                title_map=question_text_by_id,
-            )
-            linked_tasks = _resolve_note_target_labels(
-                related_links,
-                target_type="task",
-                title_map=task_title_by_id,
-            )
-            note_markdown = knowledge_note_to_markdown(note).strip()
             lines.extend(
                 [
-                    f"### {note.title}（{_note_change_action(note, start_utc=source_start_utc, end_utc=source_end_utc)}）",
-                    f"- 创建时间：{note.created_at.isoformat()}",
-                    f"- 更新时间：{note.updated_at.isoformat()}",
-                    _format_label_line("关联文献", linked_papers),
-                    _format_label_line("关联问题", linked_questions),
-                    _format_label_line("关联任务", linked_tasks),
+                    f"### {note_item['title']}（{note_item['changeType']}）",
+                    f"- 创建时间：{note_item['createdAt']}",
+                    f"- 更新时间：{note_item['updatedAt']}",
+                    f"- 上次快照更新时间：{note_item['lastSnapshotUpdatedAt'] or '（无）'}",
+                    f"- 本次快照更新时间：{note_item['currentSnapshotUpdatedAt']}",
+                    _format_label_line("关联文献", note_item["linkedPapers"]),
+                    _format_label_line("关联问题", note_item["linkedQuestions"]),
+                    _format_label_line("关联任务", note_item["linkedTasks"]),
                     "",
-                    "#### 笔记内容（Markdown）",
+                    increment_heading,
                     "",
-                    note_markdown or "（空）",
+                    note_item["incrementMarkdown"] or "（无增量）",
                     "",
                 ]
             )
@@ -374,14 +486,15 @@ async def collect_previous_day_activity_markdown(
         lines.append("")
 
     markdown = "\n".join(lines).strip()
-    yesterday_activity_count = (
+    delta_activity_count = (
         len(comment_reports) + len(created_tasks) + len(completed_tasks) + len(changed_notes)
     )
-    return {
+    activity_summary = {
+        "semantics": "delta_since_last_collect_snapshot",
         "sourceDate": source_date,
         "windowUTC": {
-            "start": source_start_utc.isoformat(),
-            "end": source_end_utc.isoformat(),
+            "start": activity_since_utc.isoformat(),
+            "end": collect_until_utc.isoformat(),
         },
         "counts": {
             "reportComments": len(comment_reports),
@@ -389,56 +502,125 @@ async def collect_previous_day_activity_markdown(
             "createdTasks": len(created_tasks),
             "completedTasks": len(completed_tasks),
             "changedNotes": len(changed_notes),
-            "yesterdayActivityCount": yesterday_activity_count,
+            # Keep legacy key name for frontend compatibility.
+            "yesterdayActivityCount": delta_activity_count,
         },
-        "hasUserActivity": yesterday_activity_count > 0,
+        "commentedPapers": [
+            {
+                "reportId": str(report.id),
+                "paperId": report.paper_id,
+                "paperTitle": report.paper.title
+                if hasattr(report, "paper") and report.paper is not None
+                else report.paper_id,
+                "updatedAt": report.updated_at.isoformat(),
+            }
+            for report in comment_reports
+        ],
+        "completedTasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+            }
+            for task in completed_tasks
+        ],
+        "createdTasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+            }
+            for task in created_tasks
+        ],
+        "changedNotes": [
+            {
+                "noteId": note["noteId"],
+                "title": note["title"],
+                "changeType": note["changeType"],
+                "updatedAt": note["updatedAt"],
+                "lastSnapshotUpdatedAt": note["lastSnapshotUpdatedAt"],
+                "currentSnapshotUpdatedAt": note["currentSnapshotUpdatedAt"],
+            }
+            for note in changed_notes
+        ],
+    }
+    return {
+        "semantics": "delta_since_last_collect_snapshot",
+        "sourceDate": source_date,
+        "windowUTC": {
+            "start": activity_since_utc.isoformat(),
+            "end": collect_until_utc.isoformat(),
+        },
+        "counts": {
+            "reportComments": len(comment_reports),
+            "openTasks": len(open_tasks),
+            "createdTasks": len(created_tasks),
+            "completedTasks": len(completed_tasks),
+            "changedNotes": len(changed_notes),
+            # Keep legacy key name for frontend compatibility.
+            "yesterdayActivityCount": delta_activity_count,
+        },
+        "hasUserActivity": delta_activity_count > 0,
+        "activitySummary": activity_summary,
         "sourceMarkdown": markdown,
     }
 
 
 async def get_previous_day_activity_preview(now: datetime | None = None) -> dict[str, Any]:
+    """Preview activity delta before triggering daily work report workflow.
+
+    Note: despite route naming history (`previous_day`), this preview uses
+    delta semantics since the latest successful collect snapshot.
+    """
     day_start_utc, _, _ = china_day_window_utc(now)
     source_start_utc = day_start_utc - timedelta(days=1)
-    source_end_utc = day_start_utc
     source_date = _source_date_from_business_day_start(day_start_utc)
+    activity_since_utc = await _resolve_activity_checkpoint_utc(
+        fallback_start_utc=source_start_utc,
+    )
+    collect_until_utc = datetime.now(tz=UTC)
 
     report_comments_raw = await PaperReadingReport.filter(
-        updated_at__gte=source_start_utc,
-        updated_at__lt=source_end_utc,
+        updated_at__gte=activity_since_utc,
+        updated_at__lt=collect_until_utc,
     ).exclude(comment="").values_list("comment", flat=True)
     report_comments_count = sum(1 for item in report_comments_raw if str(item or "").strip())
 
     open_tasks_count = int(await TodoTask.filter(is_completed=False).count())
     created_tasks_count = int(
         await TodoTask.filter(
-            created_at__gte=source_start_utc,
-            created_at__lt=source_end_utc,
+            created_at__gte=activity_since_utc,
+            created_at__lt=collect_until_utc,
         ).count()
     )
     completed_tasks_count = int(
         await TodoTask.filter(
-            completed_at__gte=source_start_utc,
-            completed_at__lt=source_end_utc,
+            completed_at__gte=activity_since_utc,
+            completed_at__lt=collect_until_utc,
         ).count()
     )
-    changed_notes_count = int(
-        await KnowledgeNote.filter(
-            Q(created_at__gte=source_start_utc, created_at__lt=source_end_utc)
-            | Q(updated_at__gte=source_start_utc, updated_at__lt=source_end_utc)
-        ).count()
-    )
+    all_notes = await KnowledgeNote.all().all()
+    snapshots = await DailyWorkNoteSnapshot.filter(note_id__in=[note.id for note in all_notes]).all()
+    snapshot_by_note_id = {str(snapshot.note_id): snapshot for snapshot in snapshots}
+    changed_notes_count = 0
+    for note in all_notes:
+        snapshot = snapshot_by_note_id.get(str(note.id))
+        note_markdown = knowledge_note_to_markdown(note).strip()
+        snapshot_markdown = str(snapshot.snapshot_markdown or "").strip() if snapshot else ""
+        if snapshot is None or note_markdown != snapshot_markdown:
+            changed_notes_count += 1
 
-    yesterday_activity_count = (
+    delta_activity_count = (
         report_comments_count
         + created_tasks_count
         + completed_tasks_count
         + changed_notes_count
     )
     return {
+        "semantics": "delta_since_last_collect_snapshot",
         "sourceDate": source_date,
         "windowUTC": {
-            "start": source_start_utc.isoformat(),
-            "end": source_end_utc.isoformat(),
+            "start": activity_since_utc.isoformat(),
+            "end": collect_until_utc.isoformat(),
         },
         "counts": {
             "reportComments": report_comments_count,
@@ -446,9 +628,10 @@ async def get_previous_day_activity_preview(now: datetime | None = None) -> dict
             "createdTasks": created_tasks_count,
             "completedTasks": completed_tasks_count,
             "changedNotes": changed_notes_count,
-            "yesterdayActivityCount": yesterday_activity_count,
+            # Keep legacy key name for frontend compatibility.
+            "yesterdayActivityCount": delta_activity_count,
         },
-        "hasUserActivity": yesterday_activity_count > 0,
+        "hasUserActivity": delta_activity_count > 0,
     }
 
 
@@ -580,6 +763,8 @@ async def workflow_has_complete_daily_work_report_output(workflow: WorkflowExecu
     payload = await get_latest_succeeded_stage_payload(workflow, STAGE_GENERATE_DAILY_REPORT)
     if not isinstance(payload, dict):
         return False
+    if str(payload.get("skipReason") or "").strip() == "no_user_activity":
+        return False
     return bool(str(payload.get("reportMarkdown") or "").strip())
 
 
@@ -652,6 +837,15 @@ async def prepare_daily_work_report_workflow_execution(
             .order_by("-started_at")
             .first()
         )
+        if resumable is not None and resumable.status == "succeeded":
+            generate_payload = await get_latest_succeeded_stage_payload(
+                resumable, STAGE_GENERATE_DAILY_REPORT
+            )
+            if (
+                isinstance(generate_payload, dict)
+                and str(generate_payload.get("skipReason") or "").strip() == "no_user_activity"
+            ):
+                resumable = None
         if resumable is not None:
             resumable_context = dict(resumable.context or {})
             resumable_context.setdefault("businessDateCST", business_date)
@@ -705,6 +899,7 @@ async def _persist_daily_work_report(
     source_date: str,
     status: str,
     source_markdown: str,
+    activity_summary: dict[str, Any] | None,
     report_markdown: str,
     error_message: str | None,
 ) -> DailyWorkReport:
@@ -715,6 +910,7 @@ async def _persist_daily_work_report(
             "source_date": source_date,
             "status": status,
             "source_markdown": source_markdown,
+            "activity_summary": activity_summary or {},
             "report_markdown": report_markdown,
             "error_message": error_message,
         },
@@ -744,23 +940,34 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
     try:
         collect_payload = await get_latest_succeeded_stage_payload(workflow, STAGE_COLLECT_USER_ACTIVITY)
         if collect_payload is None:
+            activity_since_utc = await _resolve_activity_checkpoint_utc(
+                fallback_start_utc=source_start_utc,
+                exclude_workflow_id=workflow.id,
+            )
+            collect_until_utc = datetime.now(tz=UTC)
             collect_stage = await WorkflowStageExecution.create(
                 workflow=workflow,
                 stage=STAGE_COLLECT_USER_ACTIVITY,
                 status="running",
                 input_payload={
                     "sourceDate": source_date,
-                    "sourceWindowUTC": {
+                    "sourceDateWindowUTC": {
                         "start": source_start_utc.isoformat(),
                         "end": source_end_utc.isoformat(),
+                    },
+                    # Delta baseline: this workflow collects behavior changes since
+                    # the latest successful collect snapshot, not strict calendar day.
+                    "activityDeltaWindowUTC": {
+                        "start": activity_since_utc.isoformat(),
+                        "end": collect_until_utc.isoformat(),
                     },
                 },
             )
             try:
                 collect_payload = await collect_previous_day_activity_markdown(
-                    source_start_utc=source_start_utc,
-                    source_end_utc=source_end_utc,
                     source_date=source_date,
+                    activity_since_utc=activity_since_utc,
+                    collect_until_utc=collect_until_utc,
                 )
                 await finish_stage(
                     collect_stage,
@@ -866,6 +1073,9 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
             source_date=source_date,
             status="succeeded",
             source_markdown=source_markdown,
+            activity_summary=collect_payload.get("activitySummary")
+            if isinstance(collect_payload.get("activitySummary"), dict)
+            else {},
             report_markdown=report_markdown,
             error_message=None,
         )
@@ -885,6 +1095,7 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
             source_date=source_date or "",
             status="failed",
             source_markdown=collected_source_markdown,
+            activity_summary={},
             report_markdown=generated_report_markdown,
             error_message=str(exc),
         )

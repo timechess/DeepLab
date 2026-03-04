@@ -17,8 +17,7 @@ export default async function RulesPage({
     <section className="page">
       <header className="page-header">
         <div>
-          <h2 className="page-title">运营后台 · 初筛规则</h2>
-          <p className="page-subtitle">管理初筛规则，支持新增、编辑和删除。</p>
+          <h2 className="page-title">初筛规则</h2>
         </div>
       </header>
 

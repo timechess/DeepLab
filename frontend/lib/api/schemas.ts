@@ -134,6 +134,66 @@ export const dailyWorkReportSchema = z.object({
       yesterdayActivityCount: z.number().int().nonnegative(),
     })
     .optional(),
+  behaviorSummary: z
+    .object({
+      sourceDate: z.string().optional(),
+      windowUTC: z
+        .object({
+          start: z.string(),
+          end: z.string(),
+        })
+        .optional(),
+      counts: z
+        .object({
+          reportComments: z.number().int().nonnegative(),
+          openTasks: z.number().int().nonnegative(),
+          createdTasks: z.number().int().nonnegative(),
+          completedTasks: z.number().int().nonnegative(),
+          changedNotes: z.number().int().nonnegative(),
+          yesterdayActivityCount: z.number().int().nonnegative(),
+        })
+        .optional(),
+      commentedPapers: z
+        .array(
+          z.object({
+            reportId: z.string().uuid(),
+            paperId: z.string(),
+            paperTitle: z.string(),
+            updatedAt: z.string(),
+          }),
+        )
+        .optional(),
+      completedTasks: z
+        .array(
+          z.object({
+            id: z.number().int(),
+            title: z.string(),
+          }),
+        )
+        .optional(),
+      createdTasks: z
+        .array(
+          z.object({
+            id: z.number().int(),
+            title: z.string(),
+            description: z.string(),
+          }),
+        )
+        .optional(),
+      changedNotes: z
+        .array(
+          z.object({
+            noteId: z.string().uuid(),
+            title: z.string(),
+            changeType: z.string(),
+            updatedAt: z.string(),
+            lastSnapshotUpdatedAt: z.string().nullable(),
+            currentSnapshotUpdatedAt: z.string(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
   sourceMarkdown: z.string().optional(),
   errorMessage: z.string().nullable(),
   createdAt: z.string(),

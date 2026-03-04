@@ -93,8 +93,7 @@ export default async function OpsWorkflowsPage({
     <section className="page">
       <header className="page-header">
         <div>
-          <h2 className="page-title">运营后台 · 工作流</h2>
-          <p className="page-subtitle">查看工作流记录、筛选状态并手动触发任务。</p>
+          <h2 className="page-title">工作流</h2>
         </div>
       </header>
 

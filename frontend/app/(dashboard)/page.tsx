@@ -46,7 +46,7 @@ export default async function DashboardPage({
   const todayWorkReport = todayWorkReports[0] ?? null;
   const activityCounts = dailyWorkActivityPreview.counts;
   const activityStats = [
-    { label: '前一日行为', value: `${activityCounts.yesterdayActivityCount} 条`, strong: true },
+    { label: '增量行为', value: `${activityCounts.yesterdayActivityCount} 条`, strong: true },
     { label: '精读评论', value: String(activityCounts.reportComments), strong: false },
     { label: '新建任务', value: String(activityCounts.createdTasks), strong: false },
     { label: '完成任务', value: String(activityCounts.completedTasks), strong: false },
@@ -209,7 +209,7 @@ export default async function DashboardPage({
           </>
         ) : (
           <div className="daily-report-pending-wrap">
-            <div className="daily-activity-line" role="status" aria-label="前一日用户行为统计">
+            <div className="daily-activity-line" role="status" aria-label="增量用户行为统计">
               {activityStats.map((item, index) => (
                 <div
                   className={`daily-activity-item${item.strong ? ' daily-activity-item-strong' : ''}`}

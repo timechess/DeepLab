@@ -75,8 +75,7 @@ export default async function DailyWorkReportsPage({
     <section className="page">
       <header className="page-header">
         <div>
-          <h2 className="page-title">运营后台 · 日报管理</h2>
-          <p className="page-subtitle">查看日报记录并按业务日期筛选。</p>
+          <h2 className="page-title">日报管理</h2>
         </div>
       </header>
 

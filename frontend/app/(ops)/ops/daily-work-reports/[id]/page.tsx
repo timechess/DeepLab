@@ -6,6 +6,17 @@ import { MarkdownRenderer } from '@/lib/markdown/renderer';
 import { decodeQueryParam } from '@/lib/query';
 import { formatDateTime } from '@/lib/time';
 
+function compactNames(values: string[], maxItems = 6): string {
+  const unique = Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+  if (unique.length === 0) {
+    return '无';
+  }
+  if (unique.length <= maxItems) {
+    return unique.join('；');
+  }
+  return `${unique.slice(0, maxItems).join('；')}；等 ${unique.length} 项`;
+}
+
 export default async function DailyWorkReportDetailPage({
   params,
   searchParams,
@@ -25,8 +36,15 @@ export default async function DailyWorkReportDetailPage({
     throw error;
   }
 
-  const sourceMarkdown = report.sourceMarkdown?.trim() || '';
   const reportMarkdown = report.reportMarkdown?.trim() || '';
+  const behaviorSummary = report.behaviorSummary;
+  const behaviorCounts = behaviorSummary?.counts ?? report.behaviorCounts;
+  const commentedPaperNames = (behaviorSummary?.commentedPapers ?? []).map((item) => item.paperTitle || item.paperId);
+  const createdTaskNames = (behaviorSummary?.createdTasks ?? []).map((item) => item.title);
+  const completedTaskNames = (behaviorSummary?.completedTasks ?? []).map((item) => item.title);
+  const changedNoteNames = (behaviorSummary?.changedNotes ?? []).map(
+    (item) => `${item.title}（${item.changeType}）`,
+  );
 
   return (
     <section className="page">
@@ -61,13 +79,33 @@ export default async function DailyWorkReportDetailPage({
       </section>
 
       <section className="panel">
-        <h3 className="panel-title">行为总结</h3>
-        <div className="report-content-scrollbox" style={{ marginTop: 12 }}>
-          {sourceMarkdown ? <MarkdownRenderer content={sourceMarkdown} /> : <p className="page-subtitle">暂无行为汇总内容。</p>}
+        <p className="panel-kicker">行为摘要</p>
+        <h3 className="panel-title">昨日行为总结</h3>
+        <p className="page-subtitle" style={{ marginTop: 10 }}>
+          共 {behaviorCounts?.yesterdayActivityCount ?? 0} 条行为
+        </p>
+        <div className="meta-kv-grid" style={{ marginTop: 12 }}>
+          <article className="meta-kv">
+            <span>评论论文（{behaviorCounts?.reportComments ?? commentedPaperNames.length}）</span>
+            <strong>{compactNames(commentedPaperNames)}</strong>
+          </article>
+          <article className="meta-kv">
+            <span>新建任务（{behaviorCounts?.createdTasks ?? createdTaskNames.length}）</span>
+            <strong>{compactNames(createdTaskNames)}</strong>
+          </article>
+          <article className="meta-kv">
+            <span>完成任务（{behaviorCounts?.completedTasks ?? completedTaskNames.length}）</span>
+            <strong>{compactNames(completedTaskNames)}</strong>
+          </article>
+          <article className="meta-kv">
+            <span>改动笔记（{behaviorCounts?.changedNotes ?? changedNoteNames.length}）</span>
+            <strong>{compactNames(changedNoteNames)}</strong>
+          </article>
         </div>
       </section>
 
       <section className="panel">
+        <p className="panel-kicker">日报输出</p>
         <h3 className="panel-title">生成日报</h3>
         <div className="report-content-scrollbox" style={{ marginTop: 12 }}>
           {reportMarkdown ? <MarkdownRenderer content={reportMarkdown} /> : <p className="page-subtitle">暂无日报正文内容。</p>}

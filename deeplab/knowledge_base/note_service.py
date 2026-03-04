@@ -16,6 +16,11 @@ from deeplab.model import (
 
 _NOTE_TARGET_TYPES = {"paper", "question", "note", "task"}
 _DEFAULT_NOTE_TITLE = "Untitled note"
+_ARXIV_PAPER_ID_PATTERN = re.compile(
+    r"^(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[a-z\-]+)?/\d{7})(?:v\d+)?$",
+    flags=re.IGNORECASE,
+)
+_ARXIV_VERSION_SUFFIX_PATTERN = re.compile(r"v\d+$", flags=re.IGNORECASE)
 
 
 def _normalize_plain_text(text: str) -> str:
@@ -27,6 +32,37 @@ def _normalize_target_type(value: Any) -> str | None:
     if normalized in _NOTE_TARGET_TYPES:
         return normalized
     return None
+
+
+def _is_probably_arxiv_paper_id(value: str) -> bool:
+    return bool(_ARXIV_PAPER_ID_PATTERN.match(str(value or "").strip()))
+
+
+def _normalize_paper_target_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    if text.lower().startswith("paper:"):
+        text = text.split(":", 1)[1].strip()
+
+    text = re.sub(r"^arxiv\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = text.replace("http://", "https://", 1)
+
+    match = re.search(r"arxiv\.org/(?:abs|pdf)/([^?#]+)", text, flags=re.IGNORECASE)
+    if match:
+        text = match.group(1)
+
+    text = text.strip().strip("/")
+    if text.lower().endswith(".pdf"):
+        text = text[:-4]
+    text = re.sub(r"^(?:abs|pdf)/", "", text, flags=re.IGNORECASE).strip()
+    if not text:
+        return ""
+
+    if _is_probably_arxiv_paper_id(text):
+        text = _ARXIV_VERSION_SUFFIX_PATTERN.sub("", text).strip()
+    return text
 
 
 def _extract_plain_text_from_tiptap(node: Any) -> str:
@@ -518,17 +554,60 @@ async def _build_paper_report_map(paper_ids: set[str]) -> dict[str, str]:
     if not clean_ids:
         return {}
 
+    normalized_by_input = {
+        paper_id: _normalize_paper_target_id(paper_id) or paper_id for paper_id in clean_ids
+    }
+    query_ids = sorted(set(clean_ids) | set(normalized_by_input.values()))
+
     reports = (
-        await PaperReadingReport.filter(paper_id__in=clean_ids, status="succeeded")
+        await PaperReadingReport.filter(paper_id__in=query_ids, status="succeeded")
         .order_by("-created_at")
         .all()
     )
     payload: dict[str, str] = {}
+    latest_by_normalized: dict[str, str] = {}
     for report in reports:
         paper_id = str(report.paper_id).strip()
         if not paper_id or paper_id in payload:
             continue
-        payload[paper_id] = str(report.id)
+        report_id = str(report.id)
+        payload[paper_id] = report_id
+        normalized_report_id = _normalize_paper_target_id(paper_id)
+        if normalized_report_id and normalized_report_id not in latest_by_normalized:
+            latest_by_normalized[normalized_report_id] = report_id
+
+    unresolved_normalized = sorted(
+        {
+            normalized
+            for normalized in normalized_by_input.values()
+            if normalized
+            and normalized not in latest_by_normalized
+            and _is_probably_arxiv_paper_id(normalized)
+        }
+    )
+    for normalized in unresolved_normalized:
+        fallback = (
+            await PaperReadingReport.filter(
+                status="succeeded",
+                paper_id__startswith=f"{normalized}v",
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if fallback is None:
+            continue
+        fallback_report_id = str(fallback.id)
+        fallback_paper_id = str(fallback.paper_id).strip()
+        latest_by_normalized[normalized] = fallback_report_id
+        if fallback_paper_id and fallback_paper_id not in payload:
+            payload[fallback_paper_id] = fallback_report_id
+
+    for original_id, normalized_id in normalized_by_input.items():
+        if original_id in payload:
+            continue
+        report_id = latest_by_normalized.get(normalized_id)
+        if report_id:
+            payload[original_id] = report_id
     return payload
 
 
