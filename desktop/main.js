@@ -147,6 +147,26 @@ function resolveBundlePaths() {
   };
 }
 
+function resolveWindowIconPath() {
+  if (process.platform !== 'win32') {
+    return undefined;
+  }
+
+  if (app.isPackaged) {
+    const packagedIcon = path.join(process.resourcesPath, 'icon.ico');
+    if (fs.existsSync(packagedIcon)) {
+      return packagedIcon;
+    }
+    return undefined;
+  }
+
+  const devIcon = path.join(__dirname, 'build', 'icons', 'icon.ico');
+  if (fs.existsSync(devIcon)) {
+    return devIcon;
+  }
+  return undefined;
+}
+
 async function isPortAvailable(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -398,8 +418,8 @@ async function createMainWindow() {
     minHeight: 720,
     show: false,
     title: 'DeepLab',
-    frame: false,
-    titleBarStyle: 'hidden',
+    autoHideMenuBar: true,
+    icon: resolveWindowIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -425,6 +445,7 @@ async function createMainWindow() {
   });
 
   configureExternalNavigation(mainWindow);
+  mainWindow.setMenuBarVisibility(false);
   mainWindow.on('close', (event) => {
     if (isShuttingDown) {
       return;

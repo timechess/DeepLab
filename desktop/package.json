@@ -56,6 +56,10 @@
       {
         "from": ".bundle/frontend-standalone",
         "to": "frontend-standalone"
+      },
+      {
+        "from": "build/icons/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "win": {
