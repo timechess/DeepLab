@@ -133,16 +133,19 @@ function resolveBundlePaths() {
   const root = bundleRoot();
   const backendRoot = path.join(root, 'backend-src');
   const backendVenvRoot = path.join(root, 'backend-venv');
+  const backendPythonRoot = path.join(root, 'backend-python');
   const frontendRoot = path.join(root, 'frontend-standalone');
 
   assertPathExists(backendRoot, 'Embedded backend source');
   assertPathExists(backendVenvRoot, 'Embedded backend runtime');
+  assertPathExists(backendPythonRoot, 'Embedded backend python runtime');
   assertPathExists(frontendRoot, 'Embedded frontend standalone bundle');
 
   return {
     root,
     backendRoot,
     backendVenvRoot,
+    backendPythonRoot,
     frontendRoot,
   };
 }
@@ -233,6 +236,28 @@ function pythonPathFromVenv(venvRoot) {
   return path.join(venvRoot, 'bin', 'python');
 }
 
+function pythonPathFromRuntime(pythonRoot) {
+  if (process.platform === 'win32') {
+    return path.join(pythonRoot, 'python.exe');
+  }
+  return path.join(pythonRoot, 'bin', 'python3');
+}
+
+function resolveVenvSitePackagesPath(venvRoot) {
+  if (process.platform === 'win32') {
+    return path.join(venvRoot, 'Lib', 'site-packages');
+  }
+  const libRoot = path.join(venvRoot, 'lib');
+  if (!fs.existsSync(libRoot)) {
+    return null;
+  }
+  const entries = fs
+    .readdirSync(libRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('python'))
+    .map((entry) => path.join(libRoot, entry.name, 'site-packages'));
+  return entries.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
 function childProcessBaseEnv() {
   if (!app.isPackaged) {
     // Development mode keeps current env for local debugging convenience.
@@ -270,8 +295,12 @@ function trackProcessExit(child, name) {
 }
 
 async function startBackend(bundlePaths, backendPort) {
-  const pythonPath = pythonPathFromVenv(bundlePaths.backendVenvRoot);
-  assertPathExists(pythonPath, 'Embedded Python executable');
+  const pythonPath = pythonPathFromRuntime(bundlePaths.backendPythonRoot);
+  assertPathExists(pythonPath, 'Embedded Python runtime executable');
+  const sitePackages = resolveVenvSitePackagesPath(bundlePaths.backendVenvRoot);
+  if (!sitePackages) {
+    throw new Error(`Embedded site-packages not found in ${bundlePaths.backendVenvRoot}`);
+  }
 
   const env = {
     ...childProcessBaseEnv(),
@@ -284,6 +313,10 @@ async function startBackend(bundlePaths, backendPort) {
     FASTEMBED_CACHE_PATH: runtimePaths.embedCacheDir,
     DEEPLAB_EMBED_CACHE_DIR: runtimePaths.embedCacheDir,
     DEEPLAB_TMP_DIR: runtimePaths.tmpDir,
+    PYTHONHOME: bundlePaths.backendPythonRoot,
+    PYTHONPATH: process.env.PYTHONPATH
+      ? `${sitePackages}${path.delimiter}${process.env.PYTHONPATH}`
+      : sitePackages,
   };
 
   writeLog('backend', `Starting backend on port ${backendPort}`);

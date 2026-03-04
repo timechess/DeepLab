@@ -55,6 +55,10 @@
         "to": "backend-venv"
       },
       {
+        "from": ".bundle/backend-python",
+        "to": "backend-python"
+      },
+      {
         "from": ".bundle/frontend-standalone",
         "to": "frontend-standalone"
       },

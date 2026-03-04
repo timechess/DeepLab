@@ -11,6 +11,7 @@ const repoRoot = path.resolve(desktopRoot, '..');
 const bundleRoot = path.join(desktopRoot, '.bundle');
 const backendSourceRoot = path.join(bundleRoot, 'backend-src');
 const backendVenvRoot = path.join(bundleRoot, 'backend-venv');
+const backendPythonRoot = path.join(bundleRoot, 'backend-python');
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -107,6 +108,30 @@ function resolveVenvPythonPath(venvRoot) {
   return path.join(venvRoot, 'bin', 'python');
 }
 
+function resolveRuntimePythonPath(pythonRoot) {
+  if (process.platform === 'win32') {
+    return path.join(pythonRoot, 'python.exe');
+  }
+  return path.join(pythonRoot, 'bin', 'python3');
+}
+
+async function resolveBasePythonRoot(venvPython) {
+  const payload = await runCapture(
+    venvPython,
+    [
+      '-c',
+      "import json,sys; print(json.dumps({'base_prefix': sys.base_prefix}))",
+    ],
+    { cwd: repoRoot },
+  );
+  const parsed = JSON.parse(payload);
+  const basePrefix = String(parsed.base_prefix || '').trim();
+  if (!basePrefix) {
+    throw new Error('Unable to resolve Python base_prefix from venv');
+  }
+  return basePrefix;
+}
+
 async function main() {
   const uvCommand = await resolveUvCommand();
   console.log(`[backend] using uv launcher: ${uvCommand}`);
@@ -137,7 +162,17 @@ async function main() {
     throw new Error(`Embedded Python executable not found: ${venvPython}`);
   }
 
+  const basePythonRoot = await resolveBasePythonRoot(venvPython);
+  await fs.remove(backendPythonRoot);
+  await fs.copy(basePythonRoot, backendPythonRoot, { dereference: true });
+
+  const runtimePython = resolveRuntimePythonPath(backendPythonRoot);
+  if (!(await fs.pathExists(runtimePython))) {
+    throw new Error(`Embedded Python runtime executable not found: ${runtimePython}`);
+  }
+
   console.log(`[backend] runtime prepared -> ${backendVenvRoot}`);
+  console.log(`[backend] embedded python prepared -> ${backendPythonRoot}`);
 }
 
 main().catch((error) => {
