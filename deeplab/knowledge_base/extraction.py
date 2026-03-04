@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from deeplab.daily_papers.paper_reading import normalize_stage2_markdown_text
+from deeplab.db.engine import create_background_task
 from deeplab.knowledge_base.embedding import (
     assert_embedding_model_ready,
     encode_text,
@@ -591,6 +592,6 @@ async def trigger_knowledge_extraction_in_background(report_id: uuid.UUID) -> di
         except Exception:
             logger.exception("Background knowledge extraction failed: report_id=%s", report.id)
 
-    task = asyncio.create_task(_runner())
+    task = create_background_task(_runner())
     _track_background_task(task)
     return _run_to_response(run, message="知识提炼任务已提交，正在后台执行。")

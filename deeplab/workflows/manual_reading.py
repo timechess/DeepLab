@@ -13,6 +13,7 @@ from deeplab.daily_papers.paper_collection import (
     collect_and_persist_paper_by_id,
 )
 from deeplab.daily_papers.paper_reading import STAGE_PAPER_READING, run_paper_reading
+from deeplab.db.engine import create_background_task
 from deeplab.model import Paper, PaperReadingReport, WorkflowExecution, WorkflowStageExecution
 from deeplab.workflows.common import finish_stage, finish_workflow
 
@@ -201,7 +202,7 @@ async def trigger_single_paper_reading_workflow(
             await finish_workflow(workflow, status="failed", error_message=str(exc))
             logger.exception("Manual paper reading failed, paper_id=%s", paper_id)
 
-    asyncio.create_task(_runner())
+    create_background_task(_runner())
     return {
         "paper_id": paper_id,
         "title": title,
@@ -287,7 +288,7 @@ async def trigger_arxiv_paper_reading_workflow(
                 resolved_paper_id,
             )
 
-    asyncio.create_task(_runner())
+    create_background_task(_runner())
     return {
         "paper_id": requested_paper_id,
         "title": display_title,

@@ -20,6 +20,11 @@ let runtimePaths = null;
 let frontendBaseUrl = '';
 let isShuttingDown = false;
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -279,10 +284,51 @@ async function startBackend(bundlePaths, backendPort) {
   writeLog('backend', 'Health check passed');
 }
 
+async function prepareFrontendRuntimeRoot(frontendRoot) {
+  const sourceBuildIdPath = path.join(frontendRoot, '.next', 'BUILD_ID');
+  let buildId = 'unknown';
+  try {
+    buildId = (await fsp.readFile(sourceBuildIdPath, 'utf8')).trim() || 'unknown';
+  } catch {
+    // Keep fallback build id when BUILD_ID is not readable.
+  }
+
+  const safeBuildId = buildId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const runtimeBaseRoot = path.join(runtimePaths.appDataRoot, 'frontend-runtime');
+  const runtimeRoot = path.join(runtimeBaseRoot, safeBuildId);
+  const readyMarker = path.join(runtimeRoot, '.ready');
+
+  if (fs.existsSync(readyMarker)) {
+    return runtimeRoot;
+  }
+
+  await ensureDir(runtimeBaseRoot);
+  await fsp.rm(runtimeRoot, { recursive: true, force: true });
+  await fsp.cp(frontendRoot, runtimeRoot, { recursive: true, force: true });
+
+  const runtimeNodeModules = path.join(runtimeRoot, 'runtime-node-modules');
+  const nodeModules = path.join(runtimeRoot, 'node_modules');
+  if (!fs.existsSync(nodeModules) && fs.existsSync(runtimeNodeModules)) {
+    try {
+      await fsp.symlink(
+        runtimeNodeModules,
+        nodeModules,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    } catch {
+      await fsp.cp(runtimeNodeModules, nodeModules, { recursive: true, force: true });
+    }
+  }
+
+  await fsp.writeFile(readyMarker, `${nowIso()}\n`, 'utf8');
+  return runtimeRoot;
+}
+
 async function startFrontend(bundlePaths, frontendPort, backendPort) {
-  const serverEntrypoint = path.join(bundlePaths.frontendRoot, 'server.js');
+  const frontendRuntimeRoot = await prepareFrontendRuntimeRoot(bundlePaths.frontendRoot);
+  const serverEntrypoint = path.join(frontendRuntimeRoot, 'server.js');
   assertPathExists(serverEntrypoint, 'Next standalone entrypoint');
-  const runtimeNodeModules = path.join(bundlePaths.frontendRoot, 'runtime-node-modules');
+  const runtimeNodeModules = path.join(frontendRuntimeRoot, 'runtime-node-modules');
   const nodePathParts = [runtimeNodeModules];
   if (process.env.NODE_PATH) {
     nodePathParts.push(process.env.NODE_PATH);
@@ -302,7 +348,7 @@ async function startFrontend(bundlePaths, frontendPort, backendPort) {
 
   writeLog('frontend', `Starting standalone server on port ${frontendPort}`);
   frontendProcess = spawn(process.execPath, [serverEntrypoint], {
-    cwd: bundlePaths.frontendRoot,
+    cwd: frontendRuntimeRoot,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -313,9 +359,15 @@ async function startFrontend(bundlePaths, frontendPort, backendPort) {
   trackProcessExit(frontendProcess, 'frontend');
 
   frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
-  await waitForHttpReady(`${frontendBaseUrl}/`, 'Frontend readiness', {
-    accept: (response) => response.status < 500,
-  });
+  try {
+    await waitForHttpReady(`${frontendBaseUrl}/_next/static/chunks/webpack.js`, 'Frontend readiness', {
+      accept: (response) => response.status < 500,
+    });
+  } catch {
+    await waitForHttpReady(`${frontendBaseUrl}/favicon.ico`, 'Frontend readiness fallback', {
+      accept: (response) => response.status < 500,
+    });
+  }
   writeLog('frontend', 'Frontend is ready');
 }
 
@@ -353,12 +405,52 @@ async function createMainWindow() {
     },
   });
 
-  configureExternalNavigation(mainWindow);
-  await mainWindow.loadURL(frontendBaseUrl);
-
-  mainWindow.once('ready-to-show', () => {
+  let hasShown = false;
+  const showWindow = () => {
+    if (hasShown || mainWindow?.isDestroyed()) {
+      return;
+    }
+    hasShown = true;
     mainWindow.show();
+  };
+
+  const showTimer = setTimeout(showWindow, 3000);
+  mainWindow.once('ready-to-show', showWindow);
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, validatedURL) => {
+    writeLog('frontend', `Window load failed (code=${code}) ${description} -> ${validatedURL}`);
+    showWindow();
   });
+
+  configureExternalNavigation(mainWindow);
+  mainWindow.on('close', (event) => {
+    if (isShuttingDown) {
+      return;
+    }
+    event.preventDefault();
+    mainWindow.hide();
+    writeLog('app', 'Main window hidden; services continue running in background');
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+  await mainWindow.loadURL(frontendBaseUrl);
+  clearTimeout(showTimer);
+  showWindow();
+}
+
+async function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await createMainWindow();
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
 }
 
 function startupErrorHtml(error) {
@@ -467,7 +559,9 @@ async function bootstrap() {
 
   await startBackend(bundlePaths, backendPort);
   await startFrontend(bundlePaths, frontendPort, backendPort);
+  writeLog('app', 'Creating main window');
   await createMainWindow();
+  writeLog('app', 'Main window created');
 }
 
 app.on('before-quit', (event) => {
@@ -479,7 +573,15 @@ app.on('before-quit', (event) => {
 });
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Keep backend/frontend services alive in background.
+});
+
+app.on('second-instance', () => {
+  void showMainWindow();
+});
+
+app.on('activate', () => {
+  void showMainWindow();
 });
 
 app.whenReady().then(async () => {

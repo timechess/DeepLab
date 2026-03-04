@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -145,3 +146,14 @@ async def transaction(
         except Exception:
             session.execute("ROLLBACK;")
             raise
+
+
+def create_background_task(coro: Awaitable[Any]) -> asyncio.Task[Any]:
+    async def _runner() -> Any:
+        token = _SESSION.set(None)
+        try:
+            return await coro
+        finally:
+            _SESSION.reset(token)
+
+    return asyncio.create_task(_runner())

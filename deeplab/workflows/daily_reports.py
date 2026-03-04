@@ -17,6 +17,7 @@ from deeplab.daily_papers.paper_filtering import (
     run_initial_screening,
 )
 from deeplab.daily_papers.paper_reading import STAGE_PAPER_READING, run_paper_reading
+from deeplab.db.engine import create_background_task
 from deeplab.model import Paper, PaperFilteringRun, WorkflowExecution, WorkflowStageExecution
 from deeplab.workflows.common import finish_stage, finish_workflow
 
@@ -428,7 +429,7 @@ async def trigger_daily_workflow(trigger_type: str, context: dict[str, Any] | No
         except Exception:
             logger.exception("Background daily workflow failed, workflow_id=%s", workflow.id)
 
-    asyncio.create_task(_runner())
+    create_background_task(_runner())
     return str(workflow.id)
 
 

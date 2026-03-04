@@ -8,6 +8,7 @@ from typing import Any
 
 from deeplab.knowledge_base.note_service import knowledge_note_to_markdown
 from deeplab.llm_provider import LLMRuntimeSettings, get_llm_runtime_settings, invoke_llm_sync
+from deeplab.db.engine import create_background_task
 from deeplab.model import (
     DailyWorkReport,
     DailyWorkNoteSnapshot,
@@ -1141,5 +1142,5 @@ async def trigger_daily_work_report_workflow(
                 workflow.id,
             )
 
-    asyncio.create_task(_runner())
+    create_background_task(_runner())
     return str(workflow.id)
