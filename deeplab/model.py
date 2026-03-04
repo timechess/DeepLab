@@ -737,9 +737,51 @@ class BaseModel:
             return created, True
 
         changed_fields: list[str] = []
+        changed_field_set: set[str] = set()
+
+        def mark_changed(field_name: str) -> None:
+            if field_name not in changed_field_set:
+                changed_field_set.add(field_name)
+                changed_fields.append(field_name)
+
+        def values_equal(attr: str, current: Any, incoming: Any) -> bool:
+            if current is None and incoming is None:
+                return True
+            if current is None or incoming is None:
+                return False
+
+            if attr in cls._meta.uuid_fields:
+                return str(current) == str(incoming)
+            if attr in cls._meta.datetime_fields:
+                return _normalize_datetime(current) == _normalize_datetime(incoming)
+            return current == incoming
+
         for key, value in (defaults or {}).items():
+            relation = cls._meta.relations.get(key)
+            if relation is not None:
+                fk_attr = relation.fk_attr
+                fk_value = value
+                if isinstance(value, BaseModel):
+                    fk_value = getattr(value, value._meta.pk_attr)
+                    setattr(existing, key, value)
+                elif hasattr(existing, key):
+                    setattr(existing, key, None)
+
+                current_fk = getattr(existing, fk_attr, None)
+                if not values_equal(fk_attr, current_fk, fk_value):
+                    setattr(existing, fk_attr, fk_value)
+                    mark_changed(fk_attr)
+                continue
+
+            if key not in cls._meta.fields:
+                continue
+
+            current_value = getattr(existing, key, None)
+            if values_equal(key, current_value, value):
+                continue
+
             setattr(existing, key, value)
-            changed_fields.append(key)
+            mark_changed(key)
 
         if changed_fields:
             await existing.save(update_fields=changed_fields)
