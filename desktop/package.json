@@ -13,17 +13,17 @@
     "prepare:backend": "node scripts/prepare-backend-runtime.mjs",
     "prepare:bundle": "npm run clean && npm run prepare:frontend && npm run prepare:backend",
     "start": "npm run prepare:bundle && electron .",
-    "pack:win": "npm run prepare:bundle && electron-builder --win nsis --x64 --dir",
-    "pack:mac": "npm run prepare:bundle && electron-builder --mac dmg zip --dir",
-    "pack:linux": "npm run prepare:bundle && electron-builder --linux AppImage deb --dir",
-    "dist:win": "npm run prepare:bundle && electron-builder --win nsis --x64",
-    "dist:mac": "npm run prepare:bundle && electron-builder --mac dmg zip",
-    "dist:linux": "npm run prepare:bundle && electron-builder --linux AppImage deb",
-    "dist:all": "npm run prepare:bundle && electron-builder --win nsis --x64 --mac dmg zip --linux AppImage deb",
+    "pack:win": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --win nsis --x64 --dir",
+    "pack:mac": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --mac dmg zip --dir",
+    "pack:linux": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --linux AppImage deb --dir",
+    "dist:win": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --win nsis --x64",
+    "dist:mac": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --mac dmg zip",
+    "dist:linux": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --linux AppImage deb",
+    "dist:all": "npm run prepare:bundle && node scripts/run-electron-builder.mjs --win nsis --x64 --mac dmg zip --linux AppImage deb",
     "desktop:dist:win": "npm run dist:win",
     "desktop:dist:mac": "npm run dist:mac",
     "desktop:dist:linux": "npm run dist:linux",
-    "icon": "eib  -i build/icons/icon.png -o build/icons --flatten"
+    "icon": "eib  -i icon.png -o build/icons --flatten"
   },
   "devDependencies": {
     "@hunlongyu/electron-icon-builder": "^0.1.5",
@@ -60,6 +60,7 @@
     ],
     "win": {
       "icon": "build/icons/icon.ico",
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",
@@ -71,6 +72,7 @@
     },
     "mac": {
       "icon": "build/icons/icon.icns",
+      "identity": null,
       "target": [
         "dmg",
         "zip"

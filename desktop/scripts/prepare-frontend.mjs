@@ -11,6 +11,7 @@ const repoRoot = path.resolve(desktopRoot, '..');
 const frontendRoot = path.join(repoRoot, 'frontend');
 const bundleRoot = path.join(desktopRoot, '.bundle');
 const outputRoot = path.join(bundleRoot, 'frontend-standalone');
+const runtimeNodeModulesDirName = 'runtime-node-modules';
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -32,11 +33,26 @@ function run(command, args, options = {}) {
   });
 }
 
+function resolveNpmCommand() {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath) {
+    return {
+      command: process.execPath,
+      args: [npmExecPath],
+    };
+  }
+  return {
+    command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    args: [],
+  };
+}
+
 async function main() {
   await fs.ensureDir(bundleRoot);
 
   console.log('[frontend] building Next.js standalone output');
-  await run('npm', ['run', 'build'], {
+  const npmCommand = resolveNpmCommand();
+  await run(npmCommand.command, [...npmCommand.args, 'run', 'build'], {
     cwd: frontendRoot,
     env: {
       ...process.env,
@@ -60,6 +76,13 @@ async function main() {
   await fs.copy(staticSource, path.join(outputRoot, '.next', 'static'), {
     dereference: true,
   });
+
+  const standaloneNodeModules = path.join(outputRoot, 'node_modules');
+  const runtimeNodeModules = path.join(outputRoot, runtimeNodeModulesDirName);
+  if (await fs.pathExists(standaloneNodeModules)) {
+    await fs.remove(runtimeNodeModules);
+    await fs.move(standaloneNodeModules, runtimeNodeModules);
+  }
 
   if (await fs.pathExists(publicSource)) {
     await fs.copy(publicSource, path.join(outputRoot, 'public'), { dereference: true });

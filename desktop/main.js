@@ -282,11 +282,17 @@ async function startBackend(bundlePaths, backendPort) {
 async function startFrontend(bundlePaths, frontendPort, backendPort) {
   const serverEntrypoint = path.join(bundlePaths.frontendRoot, 'server.js');
   assertPathExists(serverEntrypoint, 'Next standalone entrypoint');
+  const runtimeNodeModules = path.join(bundlePaths.frontendRoot, 'runtime-node-modules');
+  const nodePathParts = [runtimeNodeModules];
+  if (process.env.NODE_PATH) {
+    nodePathParts.push(process.env.NODE_PATH);
+  }
 
   const env = {
     ...childProcessBaseEnv(),
     ELECTRON_RUN_AS_NODE: '1',
     NODE_ENV: 'production',
+    NODE_PATH: nodePathParts.join(path.delimiter),
     HOSTNAME: '127.0.0.1',
     PORT: String(frontendPort),
     TMP: runtimePaths.tmpDir,
