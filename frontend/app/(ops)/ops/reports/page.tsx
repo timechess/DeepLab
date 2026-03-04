@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { ReadByIdForm } from '@/components/ops/read-by-id-form';
 import { getReadingReports, getReadingReportsCount } from '@/lib/api/client';
 import { formatDateTime } from '@/lib/time';
 
@@ -75,6 +76,16 @@ export default async function OpsReportsPage({
           <p className="page-subtitle">按论文标题搜索报告，并按评论状态筛选。</p>
         </div>
       </header>
+
+      <section className="panel" style={{ display: 'grid', gap: 10 }}>
+        <h3 className="panel-title" style={{ marginBottom: 0 }}>
+          手动生成精读报告
+        </h3>
+        <p className="page-subtitle" style={{ margin: 0 }}>
+          输入 arXiv ID、arXiv PDF URL，或可直接下载的 PDF URL 生成精读报告。
+        </p>
+        <ReadByIdForm />
+      </section>
 
       <section className="panel" style={{ display: 'grid', gap: 10 }}>
         <form className="inline-form" method="get">

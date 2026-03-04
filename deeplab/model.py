@@ -58,6 +58,34 @@ class ScreeningRule(Model):
         ordering = ["-created_at", "-id"]
 
 
+class TodoTask(Model):
+    id = fields.IntField(pk=True, description="Task ID")
+    title = fields.CharField(max_length=255, description="Task title")
+    description = fields.TextField(description="Task description")
+    is_completed = fields.BooleanField(
+        default=False,
+        source_field="isCompleted",
+        index=True,
+        description="Whether the task is completed",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="createdAt",
+        index=True,
+        description="Task creation datetime",
+    )
+    completed_at = fields.DatetimeField(
+        null=True,
+        source_field="completedAt",
+        index=True,
+        description="Task completion datetime",
+    )
+
+    class Meta:
+        table = "todo_tasks"
+        ordering = ["is_completed", "-created_at", "-id"]
+
+
 class WorkflowExecution(Model):
     id = fields.UUIDField(pk=True, description="Workflow run ID")
     workflow_name = fields.CharField(
@@ -603,7 +631,7 @@ class KnowledgeNoteLink(Model):
     target_type = fields.CharField(
         max_length=16,
         index=True,
-        description="Link target type: paper/question/note",
+        description="Link target type: paper/question/note/task",
     )
     target_id = fields.CharField(
         max_length=128,
@@ -642,3 +670,54 @@ class RuntimeSetting(Model):
     class Meta:
         table = "runtime_settings"
         ordering = ["key"]
+
+
+class DailyWorkReport(Model):
+    id = fields.UUIDField(pk=True, description="Daily work report ID")
+    workflow = fields.ForeignKeyField(
+        "models.WorkflowExecution",
+        null=True,
+        related_name="daily_work_reports",
+        source_field="workflowId",
+    )
+    business_date = fields.CharField(
+        max_length=10,
+        unique=True,
+        source_field="businessDate",
+        description="Report business date in China time (YYYY-MM-DD)",
+    )
+    source_date = fields.CharField(
+        max_length=10,
+        source_field="sourceDate",
+        description="Source activity date in China time (YYYY-MM-DD)",
+    )
+    status = fields.CharField(max_length=32, default="succeeded", index=True)
+    source_markdown = fields.TextField(
+        default="",
+        source_field="sourceMarkdown",
+        description="Collected previous-day activity markdown",
+    )
+    report_markdown = fields.TextField(
+        default="",
+        source_field="reportMarkdown",
+        description="Generated daily work report markdown",
+    )
+    error_message = fields.TextField(
+        null=True,
+        source_field="errorMessage",
+        description="Generation error details",
+    )
+    created_at = fields.DatetimeField(
+        auto_now_add=True,
+        source_field="createdAt",
+        index=True,
+    )
+    updated_at = fields.DatetimeField(
+        auto_now=True,
+        source_field="updatedAt",
+        index=True,
+    )
+
+    class Meta:
+        table = "daily_work_reports"
+        ordering = ["-business_date", "-updated_at"]

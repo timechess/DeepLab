@@ -6,6 +6,7 @@ import type {
 } from '@/lib/api/schemas';
 
 const DAILY_WORKFLOW_NAME = 'daily_paper_reports';
+const CHINA_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 type FilteringSelectedPaper = {
   id: string;
@@ -26,6 +27,18 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+function toChinaDateKey(date: Date): string {
+  return new Date(date.getTime() + CHINA_UTC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function isInChinaDate(isoDatetime: string, chinaDateKey: string): boolean {
+  const createdAt = new Date(isoDatetime);
+  if (Number.isNaN(createdAt.valueOf())) {
+    return false;
+  }
+  return toChinaDateKey(createdAt) === chinaDateKey;
+}
+
 export function pickLatestDailyWorkflow(runs: WorkflowRun[]): WorkflowRun | null {
   return (
     runs.find(
@@ -34,6 +47,24 @@ export function pickLatestDailyWorkflow(runs: WorkflowRun[]): WorkflowRun | null
         (run.status === 'running' || run.status === 'succeeded'),
     ) || null
   );
+}
+
+export function pickLatestTodayDailyWorkflow(
+  runs: WorkflowRun[],
+  now: Date = new Date(),
+): WorkflowRun | null {
+  const todayChinaDateKey = toChinaDateKey(now);
+  return (
+    runs.find(
+      (run) =>
+        run.workflowName === DAILY_WORKFLOW_NAME &&
+        isInChinaDate(run.startedAt, todayChinaDateKey),
+    ) || null
+  );
+}
+
+export function isCreatedTodayInChina(isoDatetime: string, now: Date = new Date()): boolean {
+  return isInChinaDate(isoDatetime, toChinaDateKey(now));
 }
 
 export function pickStage(

@@ -260,6 +260,22 @@ a {
   box-shadow: 0 0 0 1px rgba(67, 197, 239, 0.22), 0 14px 30px rgba(3, 13, 22, 0.55);
 }
 
+.todo-item {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(104, 179, 214, 0.46);
+  background: linear-gradient(164deg, rgba(8, 21, 36, 0.94), rgba(5, 14, 25, 0.92));
+}
+
+.todo-item-completed {
+  border-color: rgba(85, 221, 165, 0.5);
+  background: linear-gradient(164deg, rgba(10, 28, 35, 0.93), rgba(6, 19, 24, 0.91));
+}
+
+.todo-item-completed .todo-title {
+  color: #9dcab6;
+}
+
 .rules-grid {
   display: grid;
   gap: 12px;
@@ -325,6 +341,17 @@ a {
   color: #d5e8f0;
   line-height: 1.85;
   font-size: 17px;
+}
+
+.todo-title {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.5;
+}
+
+.todo-time-grid {
+  display: grid;
+  gap: 6px;
 }
 
 .rule-footer {
@@ -877,6 +904,72 @@ table.data-table td.workflow-time-col {
   line-height: 1.9;
 }
 
+.report-preview-block {
+  display: grid;
+  gap: 8px;
+}
+
+.report-preview-scrollbox {
+  height: 240px;
+  max-height: 240px;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  scrollbar-gutter: stable both-edges;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(104, 182, 211, 0.34);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(8, 16, 28, 0.52);
+}
+
+.report-content-scrollbox {
+  height: 640px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(104, 182, 211, 0.34);
+  border-radius: 10px;
+  padding: 16px;
+  background: rgba(8, 16, 28, 0.52);
+}
+
+.daily-report-pending-wrap {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.daily-activity-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(104, 182, 211, 0.34);
+  border-radius: 10px;
+  background: rgba(8, 16, 28, 0.56);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.daily-activity-item {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #9cc0d0;
+}
+
+.daily-activity-item-strong {
+  color: #d7f3ff;
+}
+
+.daily-activity-sep {
+  flex: 0 0 auto;
+  color: #628ea2;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .note-editor-page {
   min-height: 100vh;
   padding: 26px;
@@ -1091,14 +1184,35 @@ table.data-table td.workflow-time-col {
 }
 
 .note-editor-content p {
-  margin: 0 0 0.95em;
+  margin: 0 0 0.82em;
 }
 
 .note-editor-content h1,
 .note-editor-content h2,
 .note-editor-content h3 {
-  margin: 1.1em 0 0.56em;
-  line-height: 1.42;
+  margin: 0.32em 0 0.44em;
+  line-height: 1.46;
+  letter-spacing: 0.008em;
+}
+
+.note-editor-content h1 {
+  font-size: 1.32em;
+}
+
+.note-editor-content h2 {
+  font-size: 1.2em;
+}
+
+.note-editor-content h3 {
+  font-size: 1.1em;
+}
+
+.note-editor-content > *:first-child {
+  margin-top: 0;
+}
+
+.note-editor-content > *:last-child {
+  margin-bottom: 0;
 }
 
 .note-editor-content pre {
@@ -1108,6 +1222,28 @@ table.data-table td.workflow-time-col {
   border: 1px solid rgba(100, 146, 180, 0.38);
   background: #f0f7ff;
   overflow-x: auto;
+}
+
+.note-editor-content .Tiptap-mathematics-render {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+}
+
+.note-editor-content .Tiptap-mathematics-render--display {
+  display: block;
+  width: 100%;
+  text-align: center;
+  margin: 0.12em 0;
+}
+
+.note-editor-content .Tiptap-mathematics-render--display .katex-display {
+  margin: 0;
+}
+
+.note-editor-content p:has(> .Tiptap-mathematics-render--display) {
+  margin-top: 0.68em;
+  margin-bottom: 0.68em;
 }
 
 .note-mention-node {
@@ -1457,6 +1593,17 @@ table.data-table td.workflow-time-col {
 
   .note-editor-content {
     font-size: 16px;
+  }
+
+  .report-content-scrollbox {
+    height: 420px;
+    padding: 12px;
+  }
+
+  .report-preview-scrollbox {
+    height: 200px;
+    max-height: 200px;
+    padding: 10px;
   }
 
   table.data-table th,

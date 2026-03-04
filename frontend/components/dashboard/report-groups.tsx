@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import type { PaperMeta, ReadingReport } from '@/lib/api/schemas';
+import { MarkdownRenderer } from '@/lib/markdown/renderer';
 import { formatDate, formatDateTime } from '@/lib/time';
 
 function formatAuthors(authors: string[] | undefined): string {
@@ -43,6 +44,7 @@ function MetaChips({ meta }: { meta: PaperMeta | null | undefined }) {
 function ReportItem({ report }: { report: ReadingReport }) {
   const meta = report.paperMeta;
   const keywords = meta?.aiKeywords?.slice(0, 4) ?? [];
+  const stage2Content = report.stage2Content?.trim();
 
   return (
     <li className="report-card">
@@ -67,6 +69,19 @@ function ReportItem({ report }: { report: ReadingReport }) {
         </div>
       ) : null}
 
+      <div className="report-preview-block">
+        <p className="panel-kicker" style={{ margin: 0 }}>
+          精读报告展示
+        </p>
+        <div className="report-preview-scrollbox">
+          {stage2Content ? (
+            <MarkdownRenderer content={stage2Content} />
+          ) : (
+            <p className="page-subtitle">暂无精读报告内容。</p>
+          )}
+        </div>
+      </div>
+
       <div className="holo-line" />
 
       <Link className="button button-secondary" href={`/reports/${report.id}`}>
@@ -88,9 +103,42 @@ export function ReportGroups({
       <section className="panel">
         <p className="panel-kicker">待处理</p>
         <h2 className="panel-title">未评论报告（{uncommented.length}）</h2>
-        <ul className="panel-list" style={{ marginTop: 14 }}>
+        <ul className="panel-list selected-paper-list" style={{ marginTop: 14 }}>
           {uncommented.length > 0 ? (
-            uncommented.map((report) => <ReportItem key={report.id} report={report} />)
+            uncommented.map((report) => {
+              const meta = report.paperMeta;
+              const keywords = meta?.aiKeywords?.slice(0, 4) ?? [];
+              return (
+                <li className="report-card" key={report.id}>
+                  <div className="report-card-head">
+                    <p className="mono-id">{report.paperId}</p>
+                    <p className="page-subtitle">更新于 {formatDateTime(report.updatedAt)}</p>
+                  </div>
+
+                  <h3 className="report-card-title">{report.paperTitle || meta?.title || '未命名论文'}</h3>
+
+                  <p className="report-author-line">{formatAuthors(meta?.authors)}</p>
+
+                  <MetaChips meta={meta} />
+
+                  {keywords.length > 0 ? (
+                    <div className="meta-chip-list">
+                      {keywords.map((keyword) => (
+                        <span className="meta-chip meta-chip-outline" key={keyword}>
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="holo-line" />
+
+                  <Link className="button button-secondary" href={`/reports/${report.id}`}>
+                    进入详情
+                  </Link>
+                </li>
+              );
+            })
           ) : (
             <li className="report-card">
               <p className="page-subtitle">暂无未评论报告。</p>

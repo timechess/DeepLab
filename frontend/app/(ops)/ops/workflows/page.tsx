@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { DailyWorkReportTrigger } from '@/components/ops/daily-work-report-trigger';
 import { DailyWorkflowTrigger } from '@/components/ops/daily-workflow-trigger';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { getWorkflowRuns, getWorkflowRunsCount } from '@/lib/api/client';
@@ -101,8 +102,9 @@ export default async function OpsWorkflowsPage({
       {query.error ? <p className="notice notice-error">{decodeQueryParam(query.error)}</p> : null}
 
       <section className="panel" style={{ display: 'grid', gap: 12 }}>
-        <div className="toolbar">
+        <div className="toolbar" style={{ display: 'grid', gap: 12 }}>
           <DailyWorkflowTrigger />
+          <DailyWorkReportTrigger />
         </div>
 
         <form className="inline-form" method="get">

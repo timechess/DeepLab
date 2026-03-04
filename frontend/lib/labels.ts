@@ -1,5 +1,6 @@
 const WORKFLOW_NAME_LABELS: Record<string, string> = {
   daily_paper_reports: '每日论文工作流',
+  daily_work_reports: 'AI 工作日报工作流',
   daily_paper_workflow: '每日论文工作流',
   paper_collection: '论文收集工作流',
   paper_filtering: '论文初筛工作流',
@@ -8,6 +9,7 @@ const WORKFLOW_NAME_LABELS: Record<string, string> = {
   filter_papers: '论文初筛工作流',
   read_papers: '论文精读工作流',
   reading_report_generation: '精读报告生成',
+  daily_work_report_generation: '工作日报生成',
 };
 
 const TRIGGER_TYPE_LABELS: Record<string, string> = {
@@ -25,6 +27,8 @@ const STAGE_LABELS: Record<string, string> = {
   paper_collection: '论文收集',
   paper_filtering: '论文初筛',
   paper_reading: '论文精读',
+  collect_user_activity: '行为汇总',
+  generate_daily_report: '日报生成',
   fetch_papers: '论文收集',
   filter_papers: '论文初筛',
   read_papers: '论文精读',

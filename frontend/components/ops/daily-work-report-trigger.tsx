@@ -3,13 +3,15 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { triggerDailyWorkflowRefreshAction } from '@/app/actions';
+import { triggerDailyWorkReportWorkflowRefreshAction } from '@/app/actions';
 
-type DailyWorkflowTriggerProps = {
+type DailyWorkReportTriggerProps = {
   buttonLabel?: string;
 };
 
-export function DailyWorkflowTrigger({ buttonLabel = '触发每日工作流' }: DailyWorkflowTriggerProps) {
+export function DailyWorkReportTrigger({
+  buttonLabel = '触发 AI 日报工作流',
+}: DailyWorkReportTriggerProps) {
   const router = useRouter();
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +26,7 @@ export function DailyWorkflowTrigger({ buttonLabel = '触发每日工作流' }: 
     setError(null);
     startTransition(async () => {
       try {
-        const result = await triggerDailyWorkflowRefreshAction();
+        const result = await triggerDailyWorkReportWorkflowRefreshAction();
         if (result.ok) {
           setNotice(result.message);
         } else {

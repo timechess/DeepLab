@@ -11,9 +11,10 @@ from deeplab.model import (
     KnowledgeQuestion,
     Paper,
     PaperReadingReport,
+    TodoTask,
 )
 
-_NOTE_TARGET_TYPES = {"paper", "question", "note"}
+_NOTE_TARGET_TYPES = {"paper", "question", "note", "task"}
 _DEFAULT_NOTE_TITLE = "Untitled note"
 
 
@@ -83,7 +84,7 @@ def _extract_mentions(content_json: dict[str, Any]) -> set[tuple[str, str, str |
             continue
 
         if not target_type:
-            parsed = re.match(r"^(paper|question|note):(.*)$", target_id, flags=re.IGNORECASE)
+            parsed = re.match(r"^(paper|question|note|task):(.*)$", target_id, flags=re.IGNORECASE)
             if parsed:
                 target_type = parsed.group(1).lower()
                 target_id = parsed.group(2).strip()
@@ -127,6 +128,299 @@ def _to_excerpt(plain_text: str, max_len: int = 180) -> str:
     if len(plain_text) <= max_len:
         return plain_text
     return f"{plain_text[:max_len].rstrip()}..."
+
+
+def _safe_tiptap_children(node: dict[str, Any]) -> list[dict[str, Any]]:
+    content = node.get("content")
+    if not isinstance(content, list):
+        return []
+    return [item for item in content if isinstance(item, dict)]
+
+
+def _extract_raw_text_from_tiptap(node: Any) -> str:
+    if isinstance(node, list):
+        return "".join(_extract_raw_text_from_tiptap(item) for item in node)
+    if not isinstance(node, dict):
+        return ""
+
+    node_type = str(node.get("type") or "")
+    if node_type == "text":
+        return str(node.get("text") or "")
+    if node_type == "hardBreak":
+        return "\n"
+    return _extract_raw_text_from_tiptap(_safe_tiptap_children(node))
+
+
+def _escape_markdown_text(text: str) -> str:
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def _apply_markdown_marks(text: str, marks: Any) -> str:
+    if not isinstance(marks, list):
+        return text
+
+    rendered = text
+    for mark in marks:
+        if not isinstance(mark, dict):
+            continue
+        mark_type = str(mark.get("type") or "")
+        attrs = mark.get("attrs")
+
+        if mark_type == "bold":
+            rendered = f"**{rendered}**"
+            continue
+        if mark_type == "italic":
+            rendered = f"*{rendered}*"
+            continue
+        if mark_type == "strike":
+            rendered = f"~~{rendered}~~"
+            continue
+        if mark_type == "code":
+            escaped_code = rendered.replace("`", "\\`")
+            rendered = f"`{escaped_code}`"
+            continue
+        if mark_type == "link" and isinstance(attrs, dict):
+            href = str(attrs.get("href") or "").strip()
+            if href:
+                rendered = f"[{rendered}]({href})"
+    return rendered
+
+
+def _math_text_from_node(node: dict[str, Any]) -> str:
+    attrs = node.get("attrs")
+    if isinstance(attrs, dict):
+        for key in ("latex", "text", "formula", "value"):
+            value = str(attrs.get(key) or "").strip()
+            if value:
+                return value
+    return _extract_raw_text_from_tiptap(_safe_tiptap_children(node)).strip()
+
+
+def _render_markdown_inline(node: dict[str, Any]) -> str:
+    node_type = str(node.get("type") or "")
+    if node_type == "text":
+        text = _escape_markdown_text(str(node.get("text") or ""))
+        return _apply_markdown_marks(text, node.get("marks"))
+
+    if node_type == "hardBreak":
+        return "  \n"
+
+    if node_type == "mention":
+        attrs = node.get("attrs")
+        if not isinstance(attrs, dict):
+            return ""
+        label = str(
+            attrs.get("targetLabel")
+            or attrs.get("target_label")
+            or attrs.get("label")
+            or attrs.get("targetId")
+            or attrs.get("target_id")
+            or attrs.get("id")
+            or ""
+        ).strip()
+        if not label:
+            return ""
+        return f"[[{label}]]"
+
+    if node_type in {"inlineMath", "mathInline"}:
+        math_text = _math_text_from_node(node)
+        return f"${math_text}$" if math_text else ""
+
+    children = _safe_tiptap_children(node)
+    if not children:
+        return ""
+    return "".join(_render_markdown_inline(item) for item in children)
+
+
+def _indent_markdown_block(text: str, prefix: str) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return prefix.rstrip()
+    return "\n".join(f"{prefix}{line}" if line else prefix.rstrip() for line in lines)
+
+
+def _render_markdown_list_item(
+    node: dict[str, Any],
+    *,
+    marker: str,
+    indent_level: int,
+) -> str:
+    indent = "  " * indent_level
+    first_line_prefix = f"{indent}{marker} "
+    continuation_prefix = f"{indent}{' ' * (len(marker) + 1)}"
+
+    children = _safe_tiptap_children(node)
+    if not children:
+        return f"{indent}{marker}"
+
+    first_line = ""
+    tail_blocks: list[tuple[str, bool]] = []
+
+    for child in children:
+        child_type = str(child.get("type") or "")
+        if child_type == "paragraph":
+            paragraph = "".join(_render_markdown_inline(item) for item in _safe_tiptap_children(child)).strip()
+            if paragraph and not first_line:
+                first_line = paragraph
+            elif paragraph:
+                tail_blocks.append((paragraph, False))
+            continue
+
+        if child_type == "bulletList":
+            nested = _render_markdown_list(child, ordered=False, indent_level=indent_level + 1)
+            if nested:
+                tail_blocks.append((nested, True))
+            continue
+
+        if child_type == "orderedList":
+            nested = _render_markdown_list(child, ordered=True, indent_level=indent_level + 1)
+            if nested:
+                tail_blocks.append((nested, True))
+            continue
+
+        block = _render_markdown_block(child, indent_level=indent_level + 1).strip()
+        if not block:
+            continue
+
+        if not first_line:
+            block_lines = block.splitlines()
+            first_line = block_lines[0]
+            remainder = "\n".join(block_lines[1:]).strip()
+            if remainder:
+                tail_blocks.append((remainder, False))
+            continue
+
+        tail_blocks.append((block, False))
+
+    rendered = f"{first_line_prefix}{first_line}".rstrip()
+    for block, is_nested_list in tail_blocks:
+        if is_nested_list:
+            rendered = f"{rendered}\n{block}"
+            continue
+        rendered = f"{rendered}\n{_indent_markdown_block(block, continuation_prefix)}"
+
+    return rendered
+
+
+def _render_markdown_list(
+    node: dict[str, Any],
+    *,
+    ordered: bool,
+    indent_level: int = 0,
+) -> str:
+    items = [item for item in _safe_tiptap_children(node) if str(item.get("type") or "") == "listItem"]
+    if not items:
+        return ""
+
+    start = 1
+    attrs = node.get("attrs")
+    if ordered and isinstance(attrs, dict):
+        start_raw = attrs.get("start")
+        if isinstance(start_raw, int) and start_raw > 0:
+            start = start_raw
+        elif isinstance(start_raw, str) and start_raw.isdigit() and int(start_raw) > 0:
+            start = int(start_raw)
+
+    lines: list[str] = []
+    for index, item in enumerate(items):
+        marker = f"{start + index}." if ordered else "-"
+        rendered_item = _render_markdown_list_item(item, marker=marker, indent_level=indent_level)
+        if rendered_item:
+            lines.append(rendered_item)
+    return "\n".join(lines)
+
+
+def _render_markdown_blocks(nodes: list[dict[str, Any]], *, indent_level: int = 0) -> str:
+    rendered_blocks: list[str] = []
+    for node in nodes:
+        block = _render_markdown_block(node, indent_level=indent_level).strip()
+        if block:
+            rendered_blocks.append(block)
+    return "\n\n".join(rendered_blocks).strip()
+
+
+def _render_markdown_block(node: dict[str, Any], *, indent_level: int = 0) -> str:
+    node_type = str(node.get("type") or "")
+    children = _safe_tiptap_children(node)
+
+    if node_type == "doc":
+        return _render_markdown_blocks(children, indent_level=indent_level)
+
+    if node_type == "paragraph":
+        return "".join(_render_markdown_inline(item) for item in children).strip()
+
+    if node_type == "heading":
+        attrs = node.get("attrs")
+        level = 1
+        if isinstance(attrs, dict):
+            raw_level = attrs.get("level")
+            try:
+                level = int(raw_level)
+            except (TypeError, ValueError):
+                level = 1
+        level = min(max(level, 1), 6)
+        body = "".join(_render_markdown_inline(item) for item in children).strip()
+        return f"{'#' * level} {body}".rstrip()
+
+    if node_type == "blockquote":
+        body = _render_markdown_blocks(children, indent_level=indent_level).strip()
+        if not body:
+            return ">"
+        return "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+
+    if node_type == "bulletList":
+        return _render_markdown_list(node, ordered=False, indent_level=indent_level)
+
+    if node_type == "orderedList":
+        return _render_markdown_list(node, ordered=True, indent_level=indent_level)
+
+    if node_type == "listItem":
+        return _render_markdown_list_item(node, marker="-", indent_level=indent_level)
+
+    if node_type == "codeBlock":
+        attrs = node.get("attrs")
+        language = ""
+        if isinstance(attrs, dict):
+            language = str(attrs.get("language") or attrs.get("lang") or "").strip()
+        raw_code = _extract_raw_text_from_tiptap(children).rstrip("\n")
+        fence = "```"
+        if "```" in raw_code:
+            fence = "````"
+        return f"{fence}{language}\n{raw_code}\n{fence}"
+
+    if node_type in {"blockMath", "mathBlock"}:
+        math_text = _math_text_from_node(node)
+        if not math_text:
+            return ""
+        return f"$$\n{math_text}\n$$"
+
+    if children:
+        return _render_markdown_blocks(children, indent_level=indent_level)
+    return ""
+
+
+def knowledge_note_to_markdown(note: KnowledgeNote) -> str:
+    content_json = note.content_json if isinstance(note.content_json, dict) else {"type": "doc", "content": []}
+    body = _render_markdown_block(content_json).strip()
+    title = _resolve_title(note.title, note.plain_text)
+    if body:
+        return f"# {title}\n\n{body}\n"
+    return f"# {title}\n"
+
+
+async def get_knowledge_note_markdown_text(*, note_id: uuid.UUID) -> str | None:
+    note = await KnowledgeNote.get_or_none(id=note_id)
+    if note is None:
+        return None
+    return knowledge_note_to_markdown(note)
 
 
 def _link_to_dict(
@@ -392,7 +686,7 @@ async def search_knowledge_link_targets(
 ) -> list[dict[str, Any]]:
     normalized_type = _normalize_target_type(target_type)
     if normalized_type is None:
-        raise ValueError("type 仅支持 paper/question/note。")
+        raise ValueError("type 仅支持 paper/question/note/task。")
 
     safe_limit = min(max(limit, 1), 50)
     keyword = (q or "").strip()
@@ -425,6 +719,26 @@ async def search_knowledge_link_targets(
                 "subtitle": str(question.id),
             }
             for question in questions
+        ]
+
+    if normalized_type == "task":
+        query = TodoTask.all()
+        if keyword:
+            query = query.filter(Q(title__icontains=keyword) | Q(description__icontains=keyword))
+        tasks = await query.order_by("is_completed", "-created_at", "-id").limit(safe_limit)
+        return [
+            {
+                "type": "task",
+                "id": str(task.id),
+                "label": task.title,
+                "subtitle": (
+                    f"任务 #{task.id} · {'已完成' if task.is_completed else '未完成'}"
+                    if not str(task.description or "").strip()
+                    else f"{'已完成' if task.is_completed else '未完成'} · "
+                    f"{_to_excerpt(_normalize_plain_text(task.description), max_len=72)}"
+                ),
+            }
+            for task in tasks
         ]
 
     query = KnowledgeNote.all()

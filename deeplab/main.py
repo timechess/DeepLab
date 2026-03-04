@@ -2,7 +2,8 @@ import asyncio
 import logging
 import os
 import uuid
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
@@ -13,10 +14,12 @@ from tortoise import Tortoise
 from tortoise.contrib.fastapi import RegisterTortoise
 
 from deeplab.api.presenters import (
+    _daily_work_report_to_dict,
     _reading_report_to_dict,
     _rule_to_dict,
     _runtime_setting_to_dict,
     _stage_to_dict,
+    _todo_task_to_dict,
     _workflow_to_dict,
 )
 from deeplab.api.schemas import (
@@ -31,6 +34,8 @@ from deeplab.api.schemas import (
     RuntimeSettingUpdateRequest,
     ScreeningRuleCreateRequest,
     ScreeningRuleUpdateRequest,
+    TodoTaskCompletionUpdateRequest,
+    TodoTaskCreateRequest,
 )
 from deeplab.daily_papers.paper_collection import (
     collect_and_persist_papers,
@@ -58,6 +63,7 @@ from deeplab.knowledge_base.note_service import (
     create_knowledge_note,
     delete_knowledge_note,
     get_knowledge_note_detail,
+    get_knowledge_note_markdown_text,
     list_knowledge_notes,
     search_knowledge_link_targets,
     update_knowledge_note,
@@ -72,11 +78,13 @@ from deeplab.knowledge_base.service import (
     update_knowledge_question,
 )
 from deeplab.model import (
+    DailyWorkReport,
     Paper,
     PaperFilteringRun,
     PaperReadingReport,
     RuntimeSetting,
     ScreeningRule,
+    TodoTask,
     WorkflowExecution,
     WorkflowStageExecution,
 )
@@ -88,8 +96,11 @@ from deeplab.runtime_settings import (
 from deeplab.workflows.common import finish_stage, finish_workflow
 from deeplab.workflows.daily_reports import (
     china_day_window_utc,
-    daily_fetch_loop,
     trigger_daily_workflow,
+)
+from deeplab.workflows.daily_work_reports import (
+    get_previous_day_activity_preview,
+    trigger_daily_work_report_workflow,
 )
 from deeplab.workflows.manual_reading import (
     WORKFLOW_NAME_READING_REPORT_GENERATION,
@@ -132,15 +143,7 @@ async def lifespan(app: FastAPI):
         await normalize_knowledge_note_schema_columns()
         await ensure_knowledge_note_schema_columns()
         await Tortoise.generate_schemas(safe=True)
-        stop_event = asyncio.Event()
-        scheduler_task = asyncio.create_task(daily_fetch_loop(stop_event))
-        try:
-            yield
-        finally:
-            stop_event.set()
-            scheduler_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await scheduler_task
+        yield
 
 
 app = FastAPI(title="DeepLab API", lifespan=lifespan)
@@ -213,6 +216,51 @@ async def delete_screening_rule(rule_id: int) -> dict[str, bool]:
     deleted = await ScreeningRule.filter(id=rule_id).delete()
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Rule not found")
+    return {"deleted": True}
+
+
+@app.get("/todo_tasks")
+async def list_todo_tasks() -> list[dict[str, Any]]:
+    tasks = await TodoTask.all().order_by("is_completed", "-created_at", "-id")
+    return [_todo_task_to_dict(task) for task in tasks]
+
+
+@app.post("/todo_tasks")
+async def create_todo_task(payload: TodoTaskCreateRequest) -> dict[str, Any]:
+    title = payload.title.strip()
+    description = payload.description.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title 不能为空。")
+    if not description:
+        raise HTTPException(status_code=400, detail="description 不能为空。")
+    task = await TodoTask.create(title=title, description=description)
+    return _todo_task_to_dict(task)
+
+
+@app.put("/todo_tasks/{task_id}/completion")
+async def update_todo_task_completion(
+    task_id: int, payload: TodoTaskCompletionUpdateRequest
+) -> dict[str, Any]:
+    task = await TodoTask.get_or_none(id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if payload.completed:
+        task.is_completed = True
+        task.completed_at = datetime.now(timezone.utc)
+    else:
+        task.is_completed = False
+        task.completed_at = None
+
+    await task.save(update_fields=["is_completed", "completed_at"])
+    return _todo_task_to_dict(task)
+
+
+@app.delete("/todo_tasks/{task_id}")
+async def delete_todo_task(task_id: int) -> dict[str, bool]:
+    deleted = await TodoTask.filter(id=task_id).delete()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Task not found")
     return {"deleted": True}
 
 
@@ -777,6 +825,24 @@ async def get_knowledge_note_detail_api(note_id: str) -> dict[str, Any]:
     return data
 
 
+@app.get("/knowledge/notes/{note_id}/markdown")
+async def get_knowledge_note_markdown_api(note_id: str) -> dict[str, Any]:
+    try:
+        note_uuid = uuid.UUID(note_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid note_id") from exc
+
+    try:
+        markdown = await get_knowledge_note_markdown_text(note_id=note_uuid)
+    except Exception as exc:
+        logger.exception("Export knowledge note markdown failed, note_id=%s", note_id)
+        raise HTTPException(status_code=500, detail="Failed to export knowledge note markdown") from exc
+
+    if markdown is None:
+        raise HTTPException(status_code=404, detail="Knowledge note not found")
+    return {"noteId": str(note_uuid), "markdown": markdown}
+
+
 @app.patch("/knowledge/notes/{note_id}")
 async def update_knowledge_note_api(
     note_id: str, payload: KnowledgeNoteUpdateRequest
@@ -848,6 +914,88 @@ async def search_knowledge_link_targets_api(
         raise HTTPException(status_code=500, detail="Failed to search knowledge link targets") from exc
 
 
+def _normalize_business_date_param(raw_value: str | None) -> str | None:
+    value = str(raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="business_date 必须是 YYYY-MM-DD。") from exc
+    return value
+
+
+@app.get("/daily_work_reports")
+async def list_daily_work_reports(
+    limit: int = 20,
+    offset: int = 0,
+    business_date: str | None = None,
+    today_only: bool = False,
+) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 200)
+    safe_offset = max(offset, 0)
+
+    query = DailyWorkReport.all()
+    if today_only:
+        _, _, today_business_date = china_day_window_utc()
+        query = query.filter(business_date=today_business_date)
+    else:
+        normalized_business_date = _normalize_business_date_param(business_date)
+        if normalized_business_date:
+            query = query.filter(business_date=normalized_business_date)
+
+    reports = (
+        await query.order_by("-business_date", "-updated_at")
+        .offset(safe_offset)
+        .limit(safe_limit)
+        .select_related("workflow")
+    )
+    return [_daily_work_report_to_dict(report, include_source=False) for report in reports]
+
+
+@app.get("/daily_work_reports/count")
+async def count_daily_work_reports(
+    business_date: str | None = None,
+    today_only: bool = False,
+) -> dict[str, int]:
+    query = DailyWorkReport.all()
+    if today_only:
+        _, _, today_business_date = china_day_window_utc()
+        query = query.filter(business_date=today_business_date)
+    else:
+        normalized_business_date = _normalize_business_date_param(business_date)
+        if normalized_business_date:
+            query = query.filter(business_date=normalized_business_date)
+    total = await query.count()
+    return {"total": int(total)}
+
+
+@app.get("/daily_work_reports/activity_preview")
+async def get_daily_work_reports_activity_preview() -> dict[str, Any]:
+    try:
+        return await get_previous_day_activity_preview()
+    except Exception as exc:
+        logger.exception("Preview previous-day activity failed")
+        raise HTTPException(status_code=500, detail="Failed to preview previous-day activity") from exc
+
+
+@app.get("/daily_work_reports/{report_id}")
+async def get_daily_work_report(report_id: str) -> dict[str, Any]:
+    try:
+        report_uuid = uuid.UUID(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid report_id") from exc
+
+    report = (
+        await DailyWorkReport.filter(id=report_uuid)
+        .select_related("workflow")
+        .first()
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Daily work report not found")
+    return _daily_work_report_to_dict(report, include_source=True)
+
+
 @app.get("/workflow_runs")
 async def list_workflow_runs(
     limit: int = 20,
@@ -902,6 +1050,16 @@ async def get_workflow_run(workflow_id: str) -> dict[str, Any]:
 @app.get("/workflow_runs/daily/trigger")
 async def trigger_daily_workflow_api() -> dict[str, str]:
     workflow_id = await trigger_daily_workflow(
+        trigger_type="manual",
+        context={"manualTrigger": True},
+    )
+    return {"workflow_id": workflow_id}
+
+
+@app.post("/workflow_runs/daily_work_reports/trigger")
+@app.get("/workflow_runs/daily_work_reports/trigger")
+async def trigger_daily_work_report_workflow_api() -> dict[str, str]:
+    workflow_id = await trigger_daily_work_report_workflow(
         trigger_type="manual",
         context={"manualTrigger": True},
     )

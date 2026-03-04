@@ -28,6 +28,7 @@ npm run dev
 - `/ops/workflows` Workflow list + manual triggers
 - `/ops/workflows/[id]` Workflow timeline + payload details
 - `/ops/rules` Screening rule CRUD
+- `/ops/tasks` Todo task management
 - `/ops/reports` Report search and comment-status filter
 - `/ops/settings` Runtime settings (API keys/models/OCR) persisted in DB
 

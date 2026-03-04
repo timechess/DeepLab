@@ -6,12 +6,15 @@ import { redirect } from 'next/navigation';
 import {
   createKnowledgeQuestion,
   createScreeningRule,
+  createTodoTask,
   deleteKnowledgeNote,
   deleteKnowledgeQuestion,
   deleteRuntimeSetting,
   deleteScreeningRule,
+  deleteTodoTask,
   getRuntimeSettings,
   triggerDailyWorkflow,
+  triggerDailyWorkReportWorkflow,
   triggerFetchPapers,
   triggerFilterPapers,
   triggerKnowledgeExtraction,
@@ -21,6 +24,7 @@ import {
   updateRuntimeSetting,
   updateReadingReportComment,
   updateScreeningRule,
+  updateTodoTaskCompletion,
 } from '@/lib/api/client';
 
 function toSafePath(raw: FormDataEntryValue | null, fallback: string): string {
@@ -149,6 +153,24 @@ export async function triggerDailyWorkflowRefreshAction(): Promise<ActionResult>
   }
 }
 
+export async function triggerDailyWorkReportWorkflowRefreshAction(): Promise<ActionResult> {
+  try {
+    const result = await triggerDailyWorkReportWorkflow();
+    revalidatePath('/');
+    revalidatePath('/ops/workflows');
+    revalidatePath('/ops/daily-work-reports');
+    return {
+      ok: true,
+      message: `已触发工作日报工作流：${result.workflow_id}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: toMessage(error),
+    };
+  }
+}
+
 export async function triggerFetchPapersAction(formData: FormData) {
   const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/workflows');
   let nextLocation: string;
@@ -203,7 +225,7 @@ export async function triggerReadPapersAction(formData: FormData) {
 }
 
 export async function triggerReadByArxivIdAction(formData: FormData) {
-  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/read-by-id');
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/reports');
   const paperId = String(formData.get('paperId') ?? '').trim();
   let nextLocation: string;
 
@@ -217,7 +239,6 @@ export async function triggerReadByArxivIdAction(formData: FormData) {
     revalidatePath('/');
     revalidatePath('/ops/reports');
     revalidatePath('/ops/workflows');
-    revalidatePath('/ops/read-by-id');
 
     nextLocation = withQuery(redirectTo, 'notice', result.message);
     if (result.report_id) {
@@ -278,6 +299,61 @@ export async function deleteScreeningRuleAction(ruleId: number, formData: FormDa
     await deleteScreeningRule(ruleId);
     revalidatePath('/ops/rules');
     nextLocation = withQuery(redirectTo, 'notice', `规则 #${ruleId} 已删除`);
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function createTodoTaskAction(formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/tasks');
+  const title = String(formData.get('title') ?? '').trim();
+  const description = String(formData.get('description') ?? '').trim();
+  let nextLocation: string;
+
+  try {
+    await createTodoTask({ title, description });
+    revalidatePath('/ops/tasks');
+    nextLocation = withQuery(redirectTo, 'notice', '任务已创建');
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function toggleTodoTaskCompletionAction(
+  taskId: number,
+  currentCompleted: boolean,
+  formData: FormData,
+) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/tasks');
+  let nextLocation: string;
+
+  try {
+    await updateTodoTaskCompletion(taskId, { completed: !currentCompleted });
+    revalidatePath('/ops/tasks');
+    nextLocation = withQuery(
+      redirectTo,
+      'notice',
+      !currentCompleted ? `任务 #${taskId} 已标记完成` : `任务 #${taskId} 已标记未完成`,
+    );
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
+}
+
+export async function deleteTodoTaskAction(taskId: number, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/tasks');
+  let nextLocation: string;
+
+  try {
+    await deleteTodoTask(taskId);
+    revalidatePath('/ops/tasks');
+    nextLocation = withQuery(redirectTo, 'notice', `任务 #${taskId} 已删除`);
   } catch (error) {
     nextLocation = withQuery(redirectTo, 'error', toMessage(error));
   }

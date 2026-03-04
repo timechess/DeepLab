@@ -2,10 +2,12 @@ from typing import Any
 
 from deeplab.daily_papers.paper_reading import normalize_stage2_markdown_text
 from deeplab.model import (
+    DailyWorkReport,
     Paper,
     PaperReadingReport,
     RuntimeSetting,
     ScreeningRule,
+    TodoTask,
     WorkflowExecution,
     WorkflowStageExecution,
 )
@@ -46,6 +48,17 @@ def _runtime_setting_to_dict(
         "source": source,
         "createdAt": created_at,
         "updatedAt": updated_at,
+    }
+
+
+def _todo_task_to_dict(task: TodoTask) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "isCompleted": task.is_completed,
+        "createdAt": task.created_at.isoformat(),
+        "completedAt": task.completed_at.isoformat() if task.completed_at else None,
     }
 
 
@@ -181,3 +194,26 @@ def _reading_report_to_dict(
         data["fullReport"] = stage2_content
     return data
 
+
+def _daily_work_report_to_dict(
+    report: DailyWorkReport,
+    *,
+    include_source: bool = False,
+) -> dict[str, Any]:
+    workflow = report.workflow if hasattr(report, "workflow") else None
+    data = {
+        "id": str(report.id),
+        "workflowId": str(report.workflow_id) if report.workflow_id else None,
+        "workflowStatus": workflow.status if workflow else None,
+        "workflowTriggerType": workflow.trigger_type if workflow else None,
+        "businessDate": report.business_date,
+        "sourceDate": report.source_date,
+        "status": report.status,
+        "reportMarkdown": report.report_markdown,
+        "errorMessage": report.error_message,
+        "createdAt": report.created_at.isoformat(),
+        "updatedAt": report.updated_at.isoformat(),
+    }
+    if include_source:
+        data["sourceMarkdown"] = report.source_markdown
+    return data

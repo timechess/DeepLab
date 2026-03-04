@@ -2,7 +2,6 @@
 
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Link from '@tiptap/extension-link';
-import Mathematics from '@tiptap/extension-mathematics';
 import Mention from '@tiptap/extension-mention';
 import Placeholder from '@tiptap/extension-placeholder';
 import StarterKit from '@tiptap/starter-kit';
@@ -10,6 +9,7 @@ import { type Editor, EditorContent, useEditor } from '@tiptap/react';
 import { common, createLowlight } from 'lowlight';
 import NextLink from 'next/link';
 import { useRouter } from 'next/navigation';
+import type { Node as ProseMirrorNode } from 'prosemirror-model';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
@@ -18,10 +18,11 @@ import type {
   KnowledgeNoteLink,
   KnowledgeNoteSummary,
 } from '@/lib/api/schemas';
+import { InlineDisplayMathematics } from '@/lib/tiptap/mathematics';
 import { formatDateTime } from '@/lib/time';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-type LinkTargetType = 'paper' | 'question' | 'note';
+type LinkTargetType = 'paper' | 'question' | 'note' | 'task';
 
 type EditorPosition = {
   top: number;
@@ -61,6 +62,11 @@ type SlashCommand = {
 
 type NoteTextStats = {
   characters: number;
+};
+
+type NoteMarkdownExportResult = {
+  noteId: string;
+  markdown: string;
 };
 
 const SAVE_DEBOUNCE_MS = 2300;
@@ -106,6 +112,9 @@ function targetHref(targetType: string, targetId: string): string {
   }
   if (targetType === 'question') {
     return `/knowledge/${targetId}`;
+  }
+  if (targetType === 'task') {
+    return `/ops/tasks#task-${encodeURIComponent(targetId)}`;
   }
   return `/knowledge/notes/${targetId}/edit`;
 }
@@ -193,6 +202,9 @@ function sectionTitle(targetType: LinkTargetType): string {
   if (targetType === 'question') {
     return '问题链接';
   }
+  if (targetType === 'task') {
+    return '任务链接';
+  }
   return '笔记链接';
 }
 
@@ -240,6 +252,78 @@ function isUntitledTitle(value: string): boolean {
   return buildUntitledPattern().test(value.trim());
 }
 
+function normalizeDisplayMathParagraphs(editor: Editor): boolean {
+  const { state } = editor;
+  const paragraphType = state.schema.nodes.paragraph;
+  if (!paragraphType) {
+    return false;
+  }
+
+  const topNodes: Array<{ node: ProseMirrorNode; pos: number }> = [];
+  state.doc.forEach((node, pos) => {
+    topNodes.push({ node, pos });
+  });
+
+  let tr = state.tr;
+  let changed = false;
+  for (let index = topNodes.length - 3; index >= 0; index -= 1) {
+    const first = topNodes[index];
+    const middle = topNodes[index + 1];
+    const third = topNodes[index + 2];
+
+    if (!first || !middle || !third) {
+      continue;
+    }
+    if (first.node.type !== paragraphType || middle.node.type !== paragraphType || third.node.type !== paragraphType) {
+      continue;
+    }
+
+    const firstText = first.node.textContent.trim();
+    const middleText = middle.node.textContent.trim();
+    const thirdText = third.node.textContent.trim();
+    if (firstText !== '$$' || thirdText !== '$$' || !middleText) {
+      continue;
+    }
+
+    const replacement = paragraphType.create(null, state.schema.text(`$$${middleText}$$`));
+    const from = first.pos;
+    const to = third.pos + third.node.nodeSize;
+    tr = tr.replaceWith(from, to, replacement);
+    changed = true;
+    index -= 2;
+  }
+
+  if (!changed) {
+    return false;
+  }
+  editor.view.dispatch(tr);
+  return true;
+}
+
+function buildMarkdownFileName(title: string, noteId: string): string {
+  const fallbackName = `note-${noteId}`;
+  const trimmed = title.trim() || fallbackName;
+  const safeName = trimmed
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return `${safeName || fallbackName}.md`;
+}
+
+function triggerMarkdownDownload(markdown: string, fileName: string): void {
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = fileName;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(downloadUrl);
+}
+
 export function NoteEditor({
   mode,
   initialNote,
@@ -254,11 +338,13 @@ export function NoteEditor({
   const initialDoc = useMemo(() => toSafeDoc(initialNote?.contentJson), [initialNote?.contentJson]);
 
   const [noteId, setNoteId] = useState<string | null>(initialNote?.id ?? null);
+  const noteIdRef = useRef<string | null>(initialNote?.id ?? null);
   const [noteTitle, setNoteTitle] = useState<string>(initialNote?.title ?? UNTITLED_NOTE_BASE);
   const [defaultUntitledTitle, setDefaultUntitledTitle] = useState(UNTITLED_NOTE_BASE);
   const [noteDetail, setNoteDetail] = useState<KnowledgeNoteDetail | null>(initialNote ?? null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [exportingMarkdown, setExportingMarkdown] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [textStats, setTextStats] = useState<NoteTextStats>(() =>
     textStatsFromContent(initialNote?.plainText || ''),
@@ -274,6 +360,7 @@ export function NoteEditor({
   const inFlightRef = useRef(false);
   const queuedRef = useRef(false);
   const dirtyRef = useRef(false);
+  const normalizingMathRef = useRef(false);
   const noteTitleRef = useRef(noteTitle);
   const defaultUntitledTitleRef = useRef(defaultUntitledTitle);
   const latestDocRef = useRef<Record<string, unknown>>(initialDoc);
@@ -291,6 +378,10 @@ export function NoteEditor({
   useEffect(() => {
     defaultUntitledTitleRef.current = defaultUntitledTitle;
   }, [defaultUntitledTitle]);
+
+  useEffect(() => {
+    noteIdRef.current = noteId;
+  }, [noteId]);
 
   const slashCommands = useMemo<SlashCommand[]>(
     () => [
@@ -341,7 +432,18 @@ export function NoteEditor({
         label: '块公式',
         hint: '插入 $$...$$',
         keywords: ['math', 'latex', 'block'],
-        run: (editor) => editor.chain().focus().insertContent('\n$$\nE = mc^2\n$$\n').run(),
+        run: (editor) =>
+          editor
+            .chain()
+            .focus()
+            .insertContent([
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: '$$E = mc^2$$' }],
+              },
+              { type: 'paragraph' },
+            ])
+            .run(),
       },
       {
         id: 'link-paper',
@@ -363,6 +465,13 @@ export function NoteEditor({
         hint: '搜索并插入笔记链接',
         keywords: ['note', '笔记'],
         targetType: 'note',
+      },
+      {
+        id: 'link-task',
+        label: '链接任务',
+        hint: '搜索并插入任务链接',
+        keywords: ['task', 'todo', '任务'],
+        targetType: 'task',
       },
     ],
     [],
@@ -403,12 +512,12 @@ export function NoteEditor({
       };
       const nextSnapshot = JSON.stringify(nextPayload);
       if (!force && (!dirtyRef.current || nextSnapshot === snapshotRef.current)) {
-        return;
+        return true;
       }
 
       if (inFlightRef.current) {
         queuedRef.current = true;
-        return;
+        return false;
       }
 
       inFlightRef.current = true;
@@ -426,6 +535,7 @@ export function NoteEditor({
             }),
           });
           setNoteId(saved.id);
+          noteIdRef.current = saved.id;
           router.replace(`/knowledge/notes/${saved.id}/edit`);
         } else {
           saved = await apiBackendFetch<KnowledgeNoteDetail>(`knowledge/notes/${noteId}`, {
@@ -445,9 +555,11 @@ export function NoteEditor({
         });
         dirtyRef.current = false;
         setSaveState('saved');
+        return true;
       } catch (error) {
         setSaveState('error');
         setSaveError(error instanceof Error ? error.message : '保存失败');
+        return false;
       } finally {
         inFlightRef.current = false;
         if (queuedRef.current) {
@@ -580,7 +692,7 @@ export function NoteEditor({
       Placeholder.configure({
         placeholder: '输入内容，/ 打开命令',
       }),
-      Mathematics.configure({
+      InlineDisplayMathematics.configure({
         katexOptions: {
           throwOnError: false,
         },
@@ -592,6 +704,16 @@ export function NoteEditor({
       },
     },
     onUpdate: ({ editor: currentEditor }) => {
+      if (!normalizingMathRef.current) {
+        const normalized = normalizeDisplayMathParagraphs(currentEditor);
+        if (normalized) {
+          normalizingMathRef.current = true;
+          return;
+        }
+      } else {
+        normalizingMathRef.current = false;
+      }
+
       latestDocRef.current = currentEditor.getJSON() as Record<string, unknown>;
       setTextStats(editorTextStats(currentEditor));
       queueAutosave();
@@ -678,6 +800,34 @@ export function NoteEditor({
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
   }, [flushSave]);
+
+  const exportAsMarkdown = useCallback(async () => {
+    if (saveState === 'saving' || exportingMarkdown) {
+      return;
+    }
+
+    setExportingMarkdown(true);
+    setSaveError(null);
+    try {
+      const saved = await flushSave(true);
+      if (!saved) {
+        throw new Error('保存失败，无法导出 Markdown。');
+      }
+      const resolvedNoteId = noteIdRef.current;
+      if (!resolvedNoteId) {
+        throw new Error('笔记尚未创建，无法导出。');
+      }
+      const payload = await apiBackendFetch<NoteMarkdownExportResult>(
+        `knowledge/notes/${resolvedNoteId}/markdown`,
+      );
+      const fileName = buildMarkdownFileName(noteTitleRef.current, payload.noteId);
+      triggerMarkdownDownload(payload.markdown, fileName);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '导出 Markdown 失败');
+    } finally {
+      setExportingMarkdown(false);
+    }
+  }, [exportingMarkdown, flushSave, saveState]);
 
   useEffect(() => {
     const onKeydown = (event: KeyboardEvent) => {
@@ -820,6 +970,7 @@ export function NoteEditor({
       paper: links.filter((item) => item.targetType === 'paper'),
       question: links.filter((item) => item.targetType === 'question'),
       note: links.filter((item) => item.targetType === 'note'),
+      task: links.filter((item) => item.targetType === 'task'),
     };
   }, [noteDetail?.outgoingLinks]);
 
@@ -844,6 +995,14 @@ export function NoteEditor({
               type="button"
             >
               {focusMode ? '退出专注' : '专注模式'}
+            </button>
+            <button
+              className="button button-secondary note-save-btn"
+              disabled={saveState === 'saving' || exportingMarkdown}
+              onClick={() => void exportAsMarkdown()}
+              type="button"
+            >
+              {exportingMarkdown ? '导出中…' : '导出 Markdown'}
             </button>
             <button
               className="button button-secondary note-save-btn"
@@ -995,7 +1154,7 @@ export function NoteEditor({
 
       {!focusMode ? (
         <aside className="note-editor-sidebar">
-          {(['paper', 'question', 'note'] as LinkTargetType[]).map((targetType) => {
+          {(['paper', 'question', 'task', 'note'] as LinkTargetType[]).map((targetType) => {
             const links = groupedLinks[targetType];
             return (
               <section className="note-sidebar-section" key={targetType}>

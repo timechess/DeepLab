@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import {
   createKnowledgeQuestionResultSchema,
+  dailyWorkActivityPreviewSchema,
+  dailyWorkReportSchema,
   deleteKnowledgeNoteResultSchema,
   deleteKnowledgeQuestionResultSchema,
   filterResultSchema,
@@ -15,11 +17,14 @@ import {
   readingReportSchema,
   runtimeSettingSchema,
   screeningRuleSchema,
+  todoTaskSchema,
   triggerKnowledgeExtractionResultSchema,
   triggerResponseSchema,
   updateKnowledgeQuestionResultSchema,
   type CreateKnowledgeQuestionResult,
   type DeleteKnowledgeQuestionResult,
+  type DailyWorkReport,
+  type DailyWorkActivityPreview,
   type ReadByArxivIdResult,
   type FilterResult,
   type KnowledgeLinkTarget,
@@ -31,6 +36,7 @@ import {
   type ReadingReport,
   type RuntimeSetting,
   type ScreeningRule,
+  type TodoTask,
   type TriggerKnowledgeExtractionResult,
   type TriggerResponse,
   type UpdateKnowledgeQuestionResult,
@@ -191,6 +197,13 @@ export function triggerDailyWorkflow(): Promise<TriggerResponse> {
   });
 }
 
+export function triggerDailyWorkReportWorkflow(): Promise<TriggerResponse> {
+  return backendFetch<TriggerResponse>('/workflow_runs/daily_work_reports/trigger', {
+    method: 'POST',
+    schema: triggerResponseSchema,
+  });
+}
+
 export function triggerFetchPapers(): Promise<Array<Record<string, string>>> {
   return backendFetch<Array<Record<string, string>>>('/fetch_papers', {
     method: 'POST',
@@ -238,6 +251,12 @@ export function triggerReadPaperByArxivId(
 export function getScreeningRules(): Promise<ScreeningRule[]> {
   return backendFetch<ScreeningRule[]>('/screening_rules', {
     schema: z.array(screeningRuleSchema),
+  });
+}
+
+export function getTodoTasks(): Promise<TodoTask[]> {
+  return backendFetch<TodoTask[]>('/todo_tasks', {
+    schema: z.array(todoTaskSchema),
   });
 }
 
@@ -297,6 +316,35 @@ export function deleteScreeningRule(ruleId: number): Promise<{ deleted: boolean 
   });
 }
 
+export function createTodoTask(payload: {
+  title: string;
+  description: string;
+}): Promise<TodoTask> {
+  return backendFetch<TodoTask>('/todo_tasks', {
+    method: 'POST',
+    schema: todoTaskSchema,
+    body: payload,
+  });
+}
+
+export function updateTodoTaskCompletion(
+  taskId: number,
+  payload: { completed: boolean },
+): Promise<TodoTask> {
+  return backendFetch<TodoTask>(`/todo_tasks/${taskId}/completion`, {
+    method: 'PUT',
+    schema: todoTaskSchema,
+    body: payload,
+  });
+}
+
+export function deleteTodoTask(taskId: number): Promise<{ deleted: boolean }> {
+  return backendFetch<{ deleted: boolean }>(`/todo_tasks/${taskId}`, {
+    method: 'DELETE',
+    schema: z.object({ deleted: z.boolean() }),
+  });
+}
+
 export function getReadingReports({
   limit = 20,
   offset,
@@ -350,6 +398,56 @@ export function getReadingReportsCount({
 export function getReadingReport(reportId: string): Promise<ReadingReport> {
   return backendFetch<ReadingReport>(`/reading_reports/${reportId}`, {
     schema: readingReportSchema,
+  });
+}
+
+export function getDailyWorkReports({
+  limit = 20,
+  offset,
+  businessDate,
+  todayOnly,
+}: {
+  limit?: number;
+  offset?: number;
+  businessDate?: string;
+  todayOnly?: boolean;
+} = {}): Promise<DailyWorkReport[]> {
+  return backendFetch<DailyWorkReport[]>('/daily_work_reports', {
+    query: {
+      limit,
+      offset,
+      business_date: businessDate,
+      today_only: todayOnly,
+    },
+    schema: z.array(dailyWorkReportSchema),
+  });
+}
+
+export function getDailyWorkReportsCount({
+  businessDate,
+  todayOnly,
+}: {
+  businessDate?: string;
+  todayOnly?: boolean;
+} = {}): Promise<number> {
+  return backendFetch<{ total: number }>('/daily_work_reports/count', {
+    query: {
+      business_date: businessDate,
+      today_only: todayOnly,
+    },
+    schema: z.object({ total: z.number().int().nonnegative() }),
+  }).then((payload) => payload.total);
+}
+
+export function getDailyWorkReport(reportId: string): Promise<DailyWorkReport> {
+  return backendFetch<DailyWorkReport>(`/daily_work_reports/${reportId}`, {
+    schema: dailyWorkReportSchema,
+  });
+}
+
+export function getDailyWorkActivityPreview(): Promise<DailyWorkActivityPreview> {
+  return backendFetch<DailyWorkActivityPreview>('/daily_work_reports/activity_preview', {
+    schema: dailyWorkActivityPreviewSchema,
   });
 }
 
@@ -486,7 +584,7 @@ export function searchKnowledgeLinkTargets({
   limit = 10,
   excludeNoteId,
 }: {
-  type: 'paper' | 'question' | 'note';
+  type: 'paper' | 'question' | 'note' | 'task';
   q?: string;
   limit?: number;
   excludeNoteId?: string;

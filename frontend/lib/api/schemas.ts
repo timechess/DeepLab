@@ -42,6 +42,15 @@ export const screeningRuleSchema = z.object({
   createdAt: z.string(),
 });
 
+export const todoTaskSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  description: z.string(),
+  isCompleted: z.boolean(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+
 export const runtimeSettingSchema = z.object({
   key: z.string(),
   label: z.string(),
@@ -106,6 +115,38 @@ export const readingReportSchema = z.object({
     .optional(),
 });
 
+export const dailyWorkReportSchema = z.object({
+  id: z.string().uuid(),
+  workflowId: z.string().uuid().nullable(),
+  workflowStatus: z.string().nullable().optional(),
+  workflowTriggerType: z.string().nullable().optional(),
+  businessDate: z.string(),
+  sourceDate: z.string(),
+  status: z.string(),
+  reportMarkdown: z.string(),
+  sourceMarkdown: z.string().optional(),
+  errorMessage: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const dailyWorkActivityPreviewSchema = z.object({
+  sourceDate: z.string(),
+  windowUTC: z.object({
+    start: z.string(),
+    end: z.string(),
+  }),
+  counts: z.object({
+    reportComments: z.number().int().nonnegative(),
+    openTasks: z.number().int().nonnegative(),
+    createdTasks: z.number().int().nonnegative(),
+    completedTasks: z.number().int().nonnegative(),
+    changedNotes: z.number().int().nonnegative(),
+    yesterdayActivityCount: z.number().int().nonnegative(),
+  }),
+  hasUserActivity: z.boolean(),
+});
+
 export const knowledgeQuestionSummarySchema = z.object({
   id: z.string().uuid(),
   question: z.string(),
@@ -132,7 +173,7 @@ export const knowledgeQuestionDetailSchema = knowledgeQuestionSummarySchema.exte
   solutions: z.array(knowledgeSolutionSchema),
 });
 
-export const knowledgeLinkTargetTypeSchema = z.enum(['paper', 'question', 'note']);
+export const knowledgeLinkTargetTypeSchema = z.enum(['paper', 'question', 'note', 'task']);
 
 export const knowledgeNoteLinkSchema = z.object({
   id: z.string().uuid(),
@@ -270,8 +311,11 @@ export type WorkflowRun = z.infer<typeof workflowRunSchema>;
 export type WorkflowStage = z.infer<typeof workflowStageSchema>;
 export type WorkflowRunDetail = z.infer<typeof workflowRunDetailSchema>;
 export type ScreeningRule = z.infer<typeof screeningRuleSchema>;
+export type TodoTask = z.infer<typeof todoTaskSchema>;
 export type RuntimeSetting = z.infer<typeof runtimeSettingSchema>;
 export type ReadingReport = z.infer<typeof readingReportSchema>;
+export type DailyWorkReport = z.infer<typeof dailyWorkReportSchema>;
+export type DailyWorkActivityPreview = z.infer<typeof dailyWorkActivityPreviewSchema>;
 export type PaperMeta = z.infer<typeof paperMetaSchema>;
 export type TriggerResponse = z.infer<typeof triggerResponseSchema>;
 export type FilterResult = z.infer<typeof filterResultSchema>;

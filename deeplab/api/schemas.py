@@ -18,6 +18,19 @@ class ScreeningRuleUpdateRequest(BaseModel):
     created_by: str | None = Field(default=None, alias="createdBy")
 
 
+class TodoTaskCreateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1)
+
+
+class TodoTaskCompletionUpdateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    completed: bool
+
+
 class ManualFilterRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -87,4 +100,3 @@ class KnowledgeNoteUpdateRequest(BaseModel):
 
     title: str | None = None
     content_json: dict[str, Any] | None = Field(default=None, alias="contentJson")
-
