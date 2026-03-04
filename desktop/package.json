@@ -7,6 +7,7 @@
   "author": {"name": "timechess", "email": "tyc221@ruc.edu.cn"},
   "license": "MIT",
   "homepage": "https://github.com/timechess/DeepLab",
+  "repository": {"url": "https://github.com/timechess/DeepLab"},
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "prepare:frontend": "node scripts/prepare-frontend.mjs",
