@@ -1,22 +1,7 @@
 import Link from 'next/link';
 
 import type { PaperMeta, ReadingReport } from '@/lib/api/schemas';
-import { formatDateTime } from '@/lib/time';
-
-function formatPublishedDate(value: string | undefined): string {
-  if (!value) {
-    return '--';
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) {
-    return value;
-  }
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date);
-}
+import { formatDate, formatDateTime } from '@/lib/time';
 
 function formatAuthors(authors: string[] | undefined): string {
   if (!authors || authors.length === 0) {
@@ -41,7 +26,7 @@ function MetaChips({ meta }: { meta: PaperMeta | null | undefined }) {
     meta.organization ? `机构 ${meta.organization}` : null,
     `⬆ ${meta.upvotes}`,
     meta.githubStars !== null ? `⭐ ${meta.githubStars}` : '⭐ --',
-    `发布 ${formatPublishedDate(meta.publishedAt)}`,
+    `发布 ${formatDate(meta.publishedAt)}`,
   ].filter(Boolean) as string[];
 
   return (
