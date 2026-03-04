@@ -623,6 +623,12 @@ async def prepare_daily_work_report_workflow_execution(
             business_date=business_date,
             status="succeeded",
         )
+        if (
+            existing_report is not None
+            and str(existing_report.report_markdown or "").strip() == NO_ACTIVITY_REPORT_MARKDOWN
+        ):
+            await DailyWorkReport.filter(id=existing_report.id).delete()
+            existing_report = None
         if existing_report is not None and existing_report.workflow_id is not None:
             existing_workflow = await WorkflowExecution.get_or_none(id=existing_report.workflow_id)
             if existing_workflow is not None:
@@ -807,7 +813,14 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
                 status="succeeded",
                 output_payload=skipped_payload,
             )
-            generate_payload = skipped_payload
+            await finish_workflow(workflow, status="succeeded")
+            return {
+                "workflow_id": str(workflow.id),
+                "report_id": None,
+                "business_date": business_date,
+                "source_date": source_date,
+                "status": "skipped_no_activity",
+            }
         else:
             generate_payload = await get_latest_succeeded_stage_payload(workflow, STAGE_GENERATE_DAILY_REPORT)
             if generate_payload is None:

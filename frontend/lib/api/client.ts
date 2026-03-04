@@ -445,6 +445,13 @@ export function getDailyWorkReport(reportId: string): Promise<DailyWorkReport> {
   });
 }
 
+export function deleteDailyWorkReport(reportId: string): Promise<{ deleted: boolean }> {
+  return backendFetch<{ deleted: boolean }>(`/daily_work_reports/${reportId}`, {
+    method: 'DELETE',
+    schema: z.object({ deleted: z.boolean() }),
+  });
+}
+
 export function getDailyWorkActivityPreview(): Promise<DailyWorkActivityPreview> {
   return backendFetch<DailyWorkActivityPreview>('/daily_work_reports/activity_preview', {
     schema: dailyWorkActivityPreviewSchema,

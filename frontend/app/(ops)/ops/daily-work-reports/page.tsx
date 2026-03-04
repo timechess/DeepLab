@@ -1,11 +1,8 @@
 import Link from 'next/link';
 
-import { DailyWorkReportTrigger } from '@/components/ops/daily-work-report-trigger';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { deleteDailyWorkReportAction } from '@/app/actions';
 import { getDailyWorkReports, getDailyWorkReportsCount } from '@/lib/api/client';
-import { formatTriggerType } from '@/lib/labels';
-import { MarkdownRenderer } from '@/lib/markdown/renderer';
-import { formatDateTime } from '@/lib/time';
+import { decodeQueryParam } from '@/lib/query';
 
 const PAGE_SIZE = 10;
 
@@ -35,10 +32,27 @@ function buildReportsHref({
   return query ? `/ops/daily-work-reports?${query}` : '/ops/daily-work-reports';
 }
 
+function formatBehaviorCounts(
+  counts:
+    | {
+        reportComments: number;
+        createdTasks: number;
+        completedTasks: number;
+        changedNotes: number;
+        yesterdayActivityCount: number;
+      }
+    | undefined,
+): string {
+  if (!counts) {
+    return '--';
+  }
+  return `总 ${counts.yesterdayActivityCount} / 评论 ${counts.reportComments} / 新建 ${counts.createdTasks} / 完成 ${counts.completedTasks} / 笔记 ${counts.changedNotes}`;
+}
+
 export default async function DailyWorkReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ businessDate?: string; page?: string }>;
+  searchParams: Promise<{ businessDate?: string; page?: string; notice?: string; error?: string }>;
 }) {
   const query = await searchParams;
   const businessDate = query.businessDate?.trim() || '';
@@ -55,18 +69,21 @@ export default async function DailyWorkReportsPage({
   });
   const hasPrevPage = page > 1;
   const hasNextPage = page < totalPages;
+  const redirectTo = buildReportsHref({ page, businessDate });
 
   return (
     <section className="page">
       <header className="page-header">
         <div>
           <h2 className="page-title">运营后台 · 日报管理</h2>
-          <p className="page-subtitle">查看每日 AI 工作日报并按业务日期筛选。</p>
+          <p className="page-subtitle">查看日报记录并按业务日期筛选。</p>
         </div>
       </header>
 
+      {query.notice ? <p className="notice">{decodeQueryParam(query.notice)}</p> : null}
+      {query.error ? <p className="notice notice-error">{decodeQueryParam(query.error)}</p> : null}
+
       <section className="panel" style={{ display: 'grid', gap: 12 }}>
-        <DailyWorkReportTrigger />
         <form className="inline-form" method="get">
           <label htmlFor="business-date-filter">业务日期</label>
           <input defaultValue={businessDate} id="business-date-filter" name="businessDate" placeholder="YYYY-MM-DD" />
@@ -81,38 +98,53 @@ export default async function DailyWorkReportsPage({
       </section>
 
       <section className="panel" style={{ display: 'grid', gap: 16 }}>
-        {reports.length > 0 ? (
-          reports.map((report) => (
-            <article className="signal-card" key={report.id} style={{ display: 'grid', gap: 10 }}>
-              <div className="report-card-head">
-                <div>
-                  <p className="mono-id">{report.businessDate}</p>
-                  <h3 className="panel-title" style={{ marginTop: 4 }}>
-                    AI 工作日报
-                  </h3>
-                </div>
-                <StatusBadge status={report.status} />
-              </div>
-              <p className="page-subtitle">
-                行为来源日期：{report.sourceDate} · 生成时间：{formatDateTime(report.updatedAt)}
-              </p>
-              <p className="page-subtitle">
-                工作流：{report.workflowId || '--'} · 触发方式：
-                {report.workflowTriggerType ? formatTriggerType(report.workflowTriggerType) : '--'}
-              </p>
-              {report.errorMessage ? <p className="notice notice-error">{report.errorMessage}</p> : null}
-              {report.reportMarkdown.trim() ? (
-                <div className="report-content-scrollbox">
-                  <MarkdownRenderer content={report.reportMarkdown} />
-                </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>日报编号</th>
+                <th>行为统计</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.length > 0 ? (
+                reports.map((report) => (
+                  <tr key={report.id}>
+                    <td>
+                      <Link className="code-link" href={`/ops/daily-work-reports/${report.id}`}>
+                        {report.businessDate}
+                      </Link>
+                    </td>
+                    <td>
+                      <span className="cell-nowrap-ellipsis" title={report.id}>
+                        {report.id}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="cell-nowrap-ellipsis" title={formatBehaviorCounts(report.behaviorCounts)}>
+                        {formatBehaviorCounts(report.behaviorCounts)}
+                      </span>
+                    </td>
+                    <td>
+                      <form action={deleteDailyWorkReportAction.bind(null, report.id)}>
+                        <input name="redirectTo" type="hidden" value={redirectTo} />
+                        <button className="button button-danger" type="submit">
+                          删除
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                ))
               ) : (
-                <p className="page-subtitle">该日报暂无正文内容。</p>
+                <tr>
+                  <td colSpan={4}>暂无匹配日报。</td>
+                </tr>
               )}
-            </article>
-          ))
-        ) : (
-          <p className="page-subtitle">暂无匹配日报。</p>
-        )}
+            </tbody>
+          </table>
+        </div>
         <div className="toolbar" style={{ marginTop: 4, justifyContent: 'space-between', gap: 12 }}>
           <p className="page-subtitle">
             第 {page} / 共 {totalPages} 页

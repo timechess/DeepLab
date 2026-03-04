@@ -124,6 +124,16 @@ export const dailyWorkReportSchema = z.object({
   sourceDate: z.string(),
   status: z.string(),
   reportMarkdown: z.string(),
+  behaviorCounts: z
+    .object({
+      reportComments: z.number().int().nonnegative(),
+      openTasks: z.number().int().nonnegative(),
+      createdTasks: z.number().int().nonnegative(),
+      completedTasks: z.number().int().nonnegative(),
+      changedNotes: z.number().int().nonnegative(),
+      yesterdayActivityCount: z.number().int().nonnegative(),
+    })
+    .optional(),
   sourceMarkdown: z.string().optional(),
   errorMessage: z.string().nullable(),
   createdAt: z.string(),

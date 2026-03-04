@@ -7,6 +7,7 @@ import {
   createKnowledgeQuestion,
   createScreeningRule,
   createTodoTask,
+  deleteDailyWorkReport,
   deleteKnowledgeNote,
   deleteKnowledgeQuestion,
   deleteRuntimeSetting,
@@ -169,6 +170,22 @@ export async function triggerDailyWorkReportWorkflowRefreshAction(): Promise<Act
       message: toMessage(error),
     };
   }
+}
+
+export async function deleteDailyWorkReportAction(reportId: string, formData: FormData) {
+  const redirectTo = toSafePath(formData.get('redirectTo'), '/ops/daily-work-reports');
+  let nextLocation: string;
+
+  try {
+    await deleteDailyWorkReport(reportId);
+    revalidatePath('/ops/daily-work-reports');
+    revalidatePath('/');
+    nextLocation = withQuery(redirectTo, 'notice', '日报已删除');
+  } catch (error) {
+    nextLocation = withQuery(redirectTo, 'error', toMessage(error));
+  }
+
+  redirect(nextLocation);
 }
 
 export async function triggerFetchPapersAction(formData: FormData) {

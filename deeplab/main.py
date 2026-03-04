@@ -99,6 +99,7 @@ from deeplab.workflows.daily_reports import (
     trigger_daily_workflow,
 )
 from deeplab.workflows.daily_work_reports import (
+    NO_ACTIVITY_REPORT_MARKDOWN,
     get_previous_day_activity_preview,
     trigger_daily_work_report_workflow,
 )
@@ -936,6 +937,7 @@ async def list_daily_work_reports(
     safe_offset = max(offset, 0)
 
     query = DailyWorkReport.all()
+    query = query.exclude(report_markdown=NO_ACTIVITY_REPORT_MARKDOWN)
     if today_only:
         _, _, today_business_date = china_day_window_utc()
         query = query.filter(business_date=today_business_date)
@@ -959,6 +961,7 @@ async def count_daily_work_reports(
     today_only: bool = False,
 ) -> dict[str, int]:
     query = DailyWorkReport.all()
+    query = query.exclude(report_markdown=NO_ACTIVITY_REPORT_MARKDOWN)
     if today_only:
         _, _, today_business_date = china_day_window_utc()
         query = query.filter(business_date=today_business_date)
@@ -994,6 +997,19 @@ async def get_daily_work_report(report_id: str) -> dict[str, Any]:
     if report is None:
         raise HTTPException(status_code=404, detail="Daily work report not found")
     return _daily_work_report_to_dict(report, include_source=True)
+
+
+@app.delete("/daily_work_reports/{report_id}")
+async def delete_daily_work_report(report_id: str) -> dict[str, bool]:
+    try:
+        report_uuid = uuid.UUID(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid report_id") from exc
+
+    deleted = await DailyWorkReport.filter(id=report_uuid).delete()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Daily work report not found")
+    return {"deleted": True}
 
 
 @app.get("/workflow_runs")

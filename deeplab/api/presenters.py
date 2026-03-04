@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from deeplab.daily_papers.paper_reading import normalize_stage2_markdown_text
@@ -200,6 +201,8 @@ def _daily_work_report_to_dict(
     *,
     include_source: bool = False,
 ) -> dict[str, Any]:
+    source_markdown = str(report.source_markdown or "")
+    behavior_counts = _extract_daily_work_behavior_counts(source_markdown)
     workflow = report.workflow if hasattr(report, "workflow") else None
     data = {
         "id": str(report.id),
@@ -210,10 +213,39 @@ def _daily_work_report_to_dict(
         "sourceDate": report.source_date,
         "status": report.status,
         "reportMarkdown": report.report_markdown,
+        "behaviorCounts": behavior_counts,
         "errorMessage": report.error_message,
         "createdAt": report.created_at.isoformat(),
         "updatedAt": report.updated_at.isoformat(),
     }
     if include_source:
-        data["sourceMarkdown"] = report.source_markdown
+        data["sourceMarkdown"] = source_markdown
     return data
+
+
+def _extract_daily_work_section_count(source_markdown: str, section_title: str) -> int:
+    pattern = rf"(?m)^##\s*{re.escape(section_title)}（(\d+)）\s*$"
+    matched = re.search(pattern, source_markdown or "")
+    if matched is None:
+        return 0
+    try:
+        return int(matched.group(1))
+    except ValueError:
+        return 0
+
+
+def _extract_daily_work_behavior_counts(source_markdown: str) -> dict[str, int]:
+    report_comments = _extract_daily_work_section_count(source_markdown, "论文精读报告评论")
+    open_tasks = _extract_daily_work_section_count(source_markdown, "当前未完成任务")
+    created_tasks = _extract_daily_work_section_count(source_markdown, "前一日新建任务")
+    completed_tasks = _extract_daily_work_section_count(source_markdown, "前一日完成任务")
+    changed_notes = _extract_daily_work_section_count(source_markdown, "前一日创建或编辑笔记")
+    yesterday_activity = report_comments + created_tasks + completed_tasks + changed_notes
+    return {
+        "reportComments": report_comments,
+        "openTasks": open_tasks,
+        "createdTasks": created_tasks,
+        "completedTasks": completed_tasks,
+        "changedNotes": changed_notes,
+        "yesterdayActivityCount": yesterday_activity,
+    }
