@@ -102,7 +102,8 @@ jobs:
         with:
           tag_name: pre-${{ github.run_id }}
           name: DeepLab Desktop Pre-release ${{ github.run_number }}
-          prerelease: true
+          draft: true
+          prerelease: false
           generate_release_notes: true
           files: release-assets/**/*
         env:
