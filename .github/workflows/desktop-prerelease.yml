@@ -60,11 +60,30 @@ jobs:
         working-directory: desktop
         run: npm run ${{ matrix.build_script }}
 
-      - name: Upload artifacts
+      - name: Upload Windows installer
+        if: matrix.target == 'win'
         uses: actions/upload-artifact@v4
         with:
           name: deeplab-${{ matrix.target }}
-          path: desktop/dist/**
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+      - name: Upload macOS installer
+        if: matrix.target == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deeplab-${{ matrix.target }}
+          path: desktop/dist/*.dmg
+          if-no-files-found: error
+
+      - name: Upload Linux installers
+        if: matrix.target == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deeplab-${{ matrix.target }}
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
           if-no-files-found: error
 
   release:
