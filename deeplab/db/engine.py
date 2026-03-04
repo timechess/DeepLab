@@ -152,7 +152,8 @@ def create_background_task(coro: Awaitable[Any]) -> asyncio.Task[Any]:
     async def _runner() -> Any:
         token = _SESSION.set(None)
         try:
-            return await coro
+            async with open_session(read_only=False):
+                return await coro
         finally:
             _SESSION.reset(token)
 

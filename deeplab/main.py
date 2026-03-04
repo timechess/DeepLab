@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -48,6 +49,7 @@ from deeplab.daily_papers.paper_reading import (
 )
 from deeplab.db.engine import init_duckdb, open_session
 from deeplab.db.migrate import apply_migrations, default_migrations_dir
+from deeplab.db.maintenance import run_startup_db_maintenance
 from deeplab.knowledge_base.embedding import (
     get_embedding_download_status,
     set_embedding_model_name,
@@ -62,6 +64,10 @@ from deeplab.knowledge_base.note_service import (
     list_knowledge_notes,
     search_knowledge_link_targets,
     update_knowledge_note,
+)
+from deeplab.knowledge_base.note_sync import (
+    start_note_sync_worker,
+    stop_note_sync_worker,
 )
 from deeplab.knowledge_base.service import (
     create_manual_knowledge_question,
@@ -119,9 +125,15 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_duckdb()
+    config = init_duckdb()
     apply_migrations(migrations_dir=default_migrations_dir(), verbose=False)
+    maintenance_task = asyncio.create_task(run_startup_db_maintenance(config.path))
+    await start_note_sync_worker()
     yield
+    await stop_note_sync_worker(flush=True)
+    maintenance_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await maintenance_task
 
 
 app = FastAPI(title="DeepLab API", lifespan=lifespan)

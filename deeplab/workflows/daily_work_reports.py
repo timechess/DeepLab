@@ -7,8 +7,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from deeplab.knowledge_base.note_service import knowledge_note_to_markdown
+from deeplab.knowledge_base.note_sync import sync_dirty_notes_to_duckdb
 from deeplab.llm_provider import LLMRuntimeSettings, get_llm_runtime_settings, invoke_llm_sync
-from deeplab.db.engine import create_background_task
+from deeplab.db.engine import create_background_task, executemany
 from deeplab.model import (
     DailyWorkReport,
     DailyWorkNoteSnapshot,
@@ -342,27 +343,64 @@ async def collect_previous_day_activity_markdown(
 
     paper_title_by_id, question_text_by_id, task_title_by_id = await _build_note_target_label_maps(note_links)
 
-    changed_notes: list[dict[str, Any]] = []
+    snapshot_insert_rows: list[tuple[Any, ...]] = []
+    snapshot_update_rows: list[tuple[Any, ...]] = []
+    note_snapshot_updated_at: dict[str, datetime] = {}
+    note_last_snapshot_updated_at: dict[str, str | None] = {}
     for item in note_delta_candidates:
         note = item["note"]
         snapshot = item["snapshot"]
-        is_new_snapshot = bool(item["isNewSnapshot"])
-        snapshot_record: DailyWorkNoteSnapshot
+        note_id = str(note.id)
+        snapshot_refresh_at = datetime.now(tz=UTC)
+        note_snapshot_updated_at[note_id] = snapshot_refresh_at
+        note_last_snapshot_updated_at[note_id] = (
+            _iso_or_none(snapshot.snapshot_updated_at) if snapshot is not None else None
+        )
         if snapshot is None:
-            snapshot_record = await DailyWorkNoteSnapshot.create(
-                note=note,
-                snapshot_markdown=item["currentMarkdown"],
-                note_updated_at=note.updated_at,
+            snapshot_insert_rows.append(
+                (
+                    str(uuid.uuid4()),
+                    note_id,
+                    item["currentMarkdown"],
+                    note.updated_at,
+                    snapshot_refresh_at,
+                    snapshot_refresh_at,
+                )
             )
         else:
-            snapshot_refresh_at = datetime.now(tz=UTC)
-            snapshot.snapshot_markdown = item["currentMarkdown"]
-            snapshot.note_updated_at = note.updated_at
-            snapshot.snapshot_updated_at = snapshot_refresh_at
-            await snapshot.save(update_fields=["snapshot_markdown", "note_updated_at", "snapshot_updated_at"])
-            snapshot_record = snapshot
+            snapshot_update_rows.append(
+                (
+                    item["currentMarkdown"],
+                    note.updated_at,
+                    snapshot_refresh_at,
+                    str(snapshot.id),
+                )
+            )
 
+    if snapshot_insert_rows:
+        executemany(
+            """
+            INSERT INTO daily_work_note_snapshots
+                (id, noteId, snapshotMarkdown, noteUpdatedAt, snapshotUpdatedAt, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            snapshot_insert_rows,
+        )
+    if snapshot_update_rows:
+        executemany(
+            """
+            UPDATE daily_work_note_snapshots
+            SET snapshotMarkdown = ?, noteUpdatedAt = ?, snapshotUpdatedAt = ?
+            WHERE id = ?;
+            """,
+            snapshot_update_rows,
+        )
+
+    changed_notes: list[dict[str, Any]] = []
+    for item in note_delta_candidates:
+        note = item["note"]
         note_id = str(note.id)
+        is_new_snapshot = bool(item["isNewSnapshot"])
         related_links = links_by_note_id.get(note_id, [])
         linked_papers = _resolve_note_target_labels(
             related_links,
@@ -386,8 +424,8 @@ async def collect_previous_day_activity_markdown(
                 "changeType": "新建" if is_new_snapshot else "编辑",
                 "createdAt": note.created_at.isoformat(),
                 "updatedAt": note.updated_at.isoformat(),
-                "lastSnapshotUpdatedAt": _iso_or_none(snapshot.snapshot_updated_at) if snapshot else None,
-                "currentSnapshotUpdatedAt": snapshot_record.snapshot_updated_at.isoformat(),
+                "lastSnapshotUpdatedAt": note_last_snapshot_updated_at.get(note_id),
+                "currentSnapshotUpdatedAt": note_snapshot_updated_at[note_id].isoformat(),
                 "linkedPapers": linked_papers,
                 "linkedQuestions": linked_questions,
                 "linkedTasks": linked_tasks,
@@ -564,6 +602,7 @@ async def get_previous_day_activity_preview(now: datetime | None = None) -> dict
     Note: despite route naming history (`previous_day`), this preview uses
     delta semantics since the latest successful collect snapshot.
     """
+    await sync_dirty_notes_to_duckdb()
     day_start_utc, _, _ = china_day_window_utc(now)
     source_start_utc = day_start_utc - timedelta(days=1)
     source_date = _source_date_from_business_day_start(day_start_utc)
@@ -912,6 +951,8 @@ async def _persist_daily_work_report(
 
 
 async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dict[str, Any]:
+    # Ensure high-frequency note edits in SQLite are flushed before collecting report input.
+    await sync_dirty_notes_to_duckdb()
     context = dict(workflow.context or {})
     business_date = str(context.get("businessDateCST") or "").strip()
     source_date = str(context.get("sourceDateCST") or "").strip()

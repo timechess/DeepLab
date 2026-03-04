@@ -1,8 +1,20 @@
 import uuid
 import re
+from datetime import datetime
 from typing import Any
 
-from deeplab.db.query import Count, Q
+from deeplab.db.query import Q
+from deeplab.knowledge_base.note_sync import (
+    count_note_links,
+    create_or_update_note,
+    delete_note,
+    get_note,
+    list_incoming_note_links,
+    list_links_for_source,
+    list_notes,
+    replace_note_links as replace_note_links_local,
+    search_note_targets,
+)
 
 from deeplab.model import (
     DailyWorkNoteSnapshot,
@@ -453,54 +465,54 @@ def knowledge_note_to_markdown(note: KnowledgeNote) -> str:
 
 
 async def get_knowledge_note_markdown_text(*, note_id: uuid.UUID) -> str | None:
-    note = await KnowledgeNote.get_or_none(id=note_id)
-    if note is None:
+    local_note = await get_note(str(note_id))
+    if local_note is None:
         return None
+    note = KnowledgeNote(
+        id=uuid.UUID(local_note["id"]),
+        title=local_note["title"],
+        content_json=local_note["content_json"],
+        plain_text=local_note["plain_text"],
+        created_by=local_note["created_by"],
+        created_at=datetime.fromisoformat(local_note["created_at"]),
+        updated_at=datetime.fromisoformat(local_note["updated_at"]),
+    )
     return knowledge_note_to_markdown(note)
 
 
-def _link_to_dict(
-    link: KnowledgeNoteLink,
+def _link_dict_from_local(
+    link: dict[str, Any],
     *,
     paper_report_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = {
-        "id": str(link.id),
-        "sourceNoteId": str(link.source_note_id),
-        "targetType": link.target_type,
-        "targetId": link.target_id,
-        "targetLabel": link.target_label,
-        "createdAt": link.created_at.isoformat(),
+        "id": str(link["id"]),
+        "sourceNoteId": str(link["source_note_id"]),
+        "targetType": str(link["target_type"]),
+        "targetId": str(link["target_id"]),
+        "targetLabel": link["target_label"],
+        "createdAt": str(link["created_at"]),
     }
-    if link.target_type == "paper":
-        report_id = (paper_report_map or {}).get(link.target_id)
-        payload["readingReportId"] = report_id
+    if payload["targetType"] == "paper":
+        payload["readingReportId"] = (paper_report_map or {}).get(payload["targetId"])
     return payload
 
 
-def _incoming_link_to_dict(link: KnowledgeNoteLink) -> dict[str, Any]:
-    source_note = link.source_note if hasattr(link, "source_note") else None
-    payload = _link_to_dict(link)
-    if source_note is not None:
-        payload["sourceNoteTitle"] = source_note.title
-        payload["sourceNoteUpdatedAt"] = source_note.updated_at.isoformat()
-    return payload
-
-
-def _note_summary_dict(
-    note: KnowledgeNote,
+def _note_summary_dict_from_local(
+    note: dict[str, Any],
     *,
     outgoing_link_count: int,
     incoming_link_count: int,
 ) -> dict[str, Any]:
+    plain_text = str(note["plain_text"] or "")
     return {
-        "id": str(note.id),
-        "title": note.title,
-        "excerpt": _to_excerpt(note.plain_text),
-        "plainText": note.plain_text,
-        "createdBy": note.created_by,
-        "createdAt": note.created_at.isoformat(),
-        "updatedAt": note.updated_at.isoformat(),
+        "id": str(note["id"]),
+        "title": str(note["title"] or ""),
+        "excerpt": _to_excerpt(plain_text),
+        "plainText": plain_text,
+        "createdBy": str(note["created_by"] or "user"),
+        "createdAt": str(note["created_at"]),
+        "updatedAt": str(note["updated_at"]),
         "outgoingLinkCount": int(outgoing_link_count),
         "incomingLinkCount": int(incoming_link_count),
     }
@@ -510,43 +522,9 @@ async def _replace_note_links(
     note: KnowledgeNote,
     links: set[tuple[str, str, str | None]],
 ) -> None:
-    await KnowledgeNoteLink.filter(source_note=note).delete()
-    if not links:
+    if note.id is None:
         return
-    await KnowledgeNoteLink.bulk_create(
-        [
-            KnowledgeNoteLink(
-                source_note=note,
-                target_type=target_type,
-                target_id=target_id,
-                target_label=target_label,
-            )
-            for target_type, target_id, target_label in sorted(links)
-        ]
-    )
-
-
-async def _count_note_links(note_ids: list[uuid.UUID]) -> tuple[dict[str, int], dict[str, int]]:
-    if not note_ids:
-        return {}, {}
-
-    note_id_strings = [str(item) for item in note_ids]
-    outgoing_rows = (
-        await KnowledgeNoteLink.filter(source_note_id__in=note_ids)
-        .annotate(total=Count("id"))
-        .group_by("source_note_id")
-        .values("source_note_id", "total")
-    )
-    incoming_rows = (
-        await KnowledgeNoteLink.filter(target_type="note", target_id__in=note_id_strings)
-        .annotate(total=Count("id"))
-        .group_by("target_id")
-        .values("target_id", "total")
-    )
-
-    outgoing_map = {str(item["source_note_id"]): int(item["total"]) for item in outgoing_rows}
-    incoming_map = {str(item["target_id"]): int(item["total"]) for item in incoming_rows}
-    return outgoing_map, incoming_map
+    await replace_note_links_local(note_id=str(note.id), links=links)
 
 
 async def _build_paper_report_map(paper_ids: set[str]) -> dict[str, str]:
@@ -616,21 +594,14 @@ async def list_knowledge_notes(
     search: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    safe_limit = min(max(limit, 1), 200)
-    query = KnowledgeNote.all()
-    keyword = (search or "").strip()
-    if keyword:
-        query = query.filter(Q(title__icontains=keyword) | Q(plain_text__icontains=keyword))
-
-    notes = await query.order_by("-updated_at").limit(safe_limit)
-    note_ids = [note.id for note in notes]
-    outgoing_map, incoming_map = await _count_note_links(note_ids)
-
+    notes = await list_notes(search=search, limit=limit)
+    note_ids = [str(item["id"]) for item in notes]
+    outgoing_map, incoming_map = await count_note_links(note_ids)
     return [
-        _note_summary_dict(
+        _note_summary_dict_from_local(
             note,
-            outgoing_link_count=outgoing_map.get(str(note.id), 0),
-            incoming_link_count=incoming_map.get(str(note.id), 0),
+            outgoing_link_count=outgoing_map.get(str(note["id"]), 0),
+            incoming_link_count=incoming_map.get(str(note["id"]), 0),
         )
         for note in notes
     ]
@@ -646,53 +617,54 @@ async def create_knowledge_note(
     plain_text = _normalize_plain_text(_extract_plain_text_from_tiptap(normalized_content))
     resolved_title = _resolve_title(title, plain_text)
 
-    note = await KnowledgeNote.create(
+    note_id, _ = await create_or_update_note(
+        note_id=None,
         title=resolved_title,
         content_json=normalized_content,
         plain_text=plain_text,
         created_by=(created_by or "user").strip() or "user",
     )
-    await _replace_note_links(note, _extract_mentions(normalized_content))
-    detail = await get_knowledge_note_detail(note.id)
+    await replace_note_links_local(note_id=note_id, links=_extract_mentions(normalized_content))
+    detail = await get_knowledge_note_detail(uuid.UUID(note_id))
     if detail is None:
         raise RuntimeError("创建笔记后读取详情失败。")
     return detail
 
 
 async def get_knowledge_note_detail(note_id: uuid.UUID) -> dict[str, Any] | None:
-    note = await KnowledgeNote.get_or_none(id=note_id)
+    note = await get_note(str(note_id))
     if note is None:
         return None
 
-    outgoing_links = (
-        await KnowledgeNoteLink.filter(source_note=note)
-        .order_by("-created_at")
-        .all()
-    )
-    incoming_links = (
-        await KnowledgeNoteLink.filter(target_type="note", target_id=str(note.id))
-        .select_related("source_note")
-        .order_by("-created_at")
-        .all()
-    )
+    outgoing_links = await list_links_for_source(str(note_id))
+    incoming_links = await list_incoming_note_links(str(note_id))
+
     paper_target_ids = {
-        str(link.target_id).strip()
+        str(link["target_id"]).strip()
         for link in outgoing_links
-        if link.target_type == "paper" and str(link.target_id).strip()
+        if str(link["target_type"]) == "paper" and str(link["target_id"]).strip()
     }
     paper_report_map = await _build_paper_report_map(paper_target_ids)
 
+    outgoing_payload = [_link_dict_from_local(link, paper_report_map=paper_report_map) for link in outgoing_links]
+    incoming_payload: list[dict[str, Any]] = []
+    for link in incoming_links:
+        payload = _link_dict_from_local(link)
+        if link.get("source_note_title") is not None:
+            payload["sourceNoteTitle"] = str(link["source_note_title"])
+        if link.get("source_note_updated_at") is not None:
+            payload["sourceNoteUpdatedAt"] = str(link["source_note_updated_at"])
+        incoming_payload.append(payload)
+
     return {
-        **_note_summary_dict(
+        **_note_summary_dict_from_local(
             note,
-            outgoing_link_count=len(outgoing_links),
-            incoming_link_count=len(incoming_links),
+            outgoing_link_count=len(outgoing_payload),
+            incoming_link_count=len(incoming_payload),
         ),
-        "contentJson": note.content_json if isinstance(note.content_json, dict) else {"type": "doc", "content": []},
-        "outgoingLinks": [
-            _link_to_dict(link, paper_report_map=paper_report_map) for link in outgoing_links
-        ],
-        "incomingLinks": [_incoming_link_to_dict(link) for link in incoming_links],
+        "contentJson": note["content_json"] if isinstance(note["content_json"], dict) else {"type": "doc", "content": []},
+        "outgoingLinks": outgoing_payload,
+        "incomingLinks": incoming_payload,
     }
 
 
@@ -702,61 +674,54 @@ async def update_knowledge_note(
     title: str | None = None,
     content_json: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    note = await KnowledgeNote.get_or_none(id=note_id)
-    if note is None:
+    existing = await get_note(str(note_id))
+    if existing is None:
         return None
 
-    update_fields: list[str] = []
-    replace_links = False
-    if content_json is not None:
-        normalized_content = _normalize_content_json(content_json)
-        note.content_json = normalized_content
-        note.plain_text = _normalize_plain_text(_extract_plain_text_from_tiptap(normalized_content))
-        update_fields.extend(["content_json", "plain_text"])
-        replace_links = True
-
-    if title is not None:
-        note.title = _resolve_title(title, note.plain_text)
-        update_fields.append("title")
-
-    if not update_fields:
+    if content_json is None and title is None:
         raise ValueError("至少需要更新 title 或 contentJson。")
 
-    if "title" not in update_fields:
-        # Keep title non-empty even when content-only updates clear plain text.
-        note.title = _resolve_title(note.title, note.plain_text)
-        update_fields.append("title")
+    next_content = existing["content_json"]
+    next_plain_text = existing["plain_text"]
+    if content_json is not None:
+        next_content = _normalize_content_json(content_json)
+        next_plain_text = _normalize_plain_text(_extract_plain_text_from_tiptap(next_content))
 
-    await note.save(update_fields=[*update_fields, "updated_at"])
-    if replace_links:
-        await _replace_note_links(note, _extract_mentions(note.content_json))
+    if title is not None:
+        next_title = _resolve_title(title, next_plain_text)
+    else:
+        next_title = _resolve_title(existing["title"], next_plain_text)
 
-    detail = await get_knowledge_note_detail(note.id)
+    await create_or_update_note(
+        note_id=str(note_id),
+        title=next_title,
+        content_json=next_content,
+        plain_text=next_plain_text,
+        created_by=existing["created_by"],
+    )
+
+    if content_json is not None:
+        await replace_note_links_local(note_id=str(note_id), links=_extract_mentions(next_content))
+
+    detail = await get_knowledge_note_detail(note_id)
     if detail is None:
         raise RuntimeError("更新笔记后读取详情失败。")
     return detail
 
 
 async def delete_knowledge_note(*, note_id: uuid.UUID) -> dict[str, Any] | None:
-    note = await KnowledgeNote.get_or_none(id=note_id)
-    if note is None:
+    deleted_link_info = await delete_note(str(note_id))
+    if deleted_link_info is None:
         return None
 
-    deleted_snapshots = await DailyWorkNoteSnapshot.filter(note=note).delete()
-    deleted_outgoing = await KnowledgeNoteLink.filter(source_note=note).delete()
-    deleted_incoming = await KnowledgeNoteLink.filter(target_type="note", target_id=str(note.id)).delete()
-    deleted_notes = await KnowledgeNote.filter(id=note_id).delete()
-    if deleted_notes == 0:
-        return None
-
+    deleted_snapshots = await DailyWorkNoteSnapshot.filter(note_id=note_id).delete()
     return {
         "deleted": True,
         "noteId": str(note_id),
         "deletedSnapshots": int(deleted_snapshots),
-        "deletedOutgoingLinks": int(deleted_outgoing),
-        "deletedIncomingLinks": int(deleted_incoming),
+        "deletedOutgoingLinks": int(deleted_link_info.get("deletedOutgoingLinks", 0)),
+        "deletedIncomingLinks": int(deleted_link_info.get("deletedIncomingLinks", 0)),
     }
-
 
 async def search_knowledge_link_targets(
     *,
@@ -822,24 +787,8 @@ async def search_knowledge_link_targets(
             for task in tasks
         ]
 
-    query = KnowledgeNote.all()
-    if keyword:
-        query = query.filter(Q(title__icontains=keyword) | Q(plain_text__icontains=keyword))
-    notes = await query.order_by("-updated_at").limit(safe_limit * 2)
-
-    payload: list[dict[str, Any]] = []
-    for note in notes:
-        note_id = str(note.id)
-        if exclude_note_id and note_id == exclude_note_id:
-            continue
-        payload.append(
-            {
-                "type": "note",
-                "id": note_id,
-                "label": note.title,
-                "subtitle": _to_excerpt(note.plain_text, max_len=96) or note_id,
-            }
-        )
-        if len(payload) >= safe_limit:
-            break
-    return payload
+    return await search_note_targets(
+        keyword=keyword,
+        limit=safe_limit,
+        exclude_note_id=exclude_note_id,
+    )
