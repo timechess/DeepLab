@@ -21,6 +21,11 @@ from deeplab.model import (
     WorkflowExecution,
     WorkflowStageExecution,
 )
+from deeplab.runtime_settings import (
+    DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT,
+    DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE,
+    resolve_setting_value,
+)
 from deeplab.workflows.common import finish_stage, finish_workflow
 from deeplab.workflows.daily_reports import CHINA_UTC_OFFSET, china_day_window_utc
 
@@ -34,46 +39,32 @@ DEFAULT_DAILY_WORK_REPORT_TEMPERATURE = 0.7
 _DAILY_WORK_REPORT_TRIGGER_LOCK = asyncio.Lock()
 NO_ACTIVITY_REPORT_MARKDOWN = "昨天没有任何工作记录。"
 
-DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT = (
-    "你是严谨的科研工作日报 Agent。"
-    "你将基于用户前一天的真实行为记录生成中文 Markdown 日报。"
-    "禁止虚构输入中不存在的信息，内容要具体、可执行。"
-)
-
-DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE = """
-请基于以下“用户行为汇总”生成 {{BUSINESS_DATE}} 的工作日报。
-
-你必须严格输出且只输出以下三节（Markdown 标题）：
-## 昨日工作总结
-要求：针对输入中的真实行为给出精简分条列点（`-` 列表），强调已完成事项、关键进展、阻塞点。
-
-## 今日工作规划
-要求：结合“当前未完成任务 + 昨日进展”给出今日计划，分条列点，明确优先级和可执行动作。
-
-## 工作建议
-要求：给出面向当前研究与工程推进的建议，可包含研究创新点、验证路径、实验设计、风险控制等，同样分条列点。
-
-约束：
-1. 所有结论必须能在输入中找到依据，不得杜撰。
-2. 不要输出除上述三节外的其他大标题。
-3. 输出必须是 Markdown 正文，不要包裹代码围栏。
-
-【业务日期】
-{{BUSINESS_DATE}}
-
-【来源日期标记】
-{{SOURCE_DATE}}
-
-【用户行为汇总】
-{{ACTIVITY_MARKDOWN}}
-""".strip()
-
 
 def _render_prompt_template(template: str, variables: dict[str, str]) -> str:
     rendered = template
     for key, value in variables.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
     return rendered.strip()
+
+
+async def _get_daily_work_report_prompt_templates() -> tuple[str, str]:
+    system_prompt = await resolve_setting_value(
+        key="daily_work_report_system_prompt",
+        env_keys=(),
+        default=DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT,
+    )
+    if not system_prompt:
+        system_prompt = DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT
+
+    user_prompt_template = await resolve_setting_value(
+        key="daily_work_report_user_prompt_template",
+        env_keys=(),
+        default=DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE,
+    )
+    if not user_prompt_template:
+        user_prompt_template = DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE
+
+    return system_prompt, user_prompt_template
 
 
 def _source_date_from_business_day_start(day_start_utc: datetime) -> str:
@@ -668,9 +659,9 @@ async def generate_daily_work_report_markdown(
     stage_execution: WorkflowStageExecution,
 ) -> dict[str, Any]:
     llm_settings: LLMRuntimeSettings = await get_llm_runtime_settings()
-    system_prompt = DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT
+    system_prompt, user_prompt_template = await _get_daily_work_report_prompt_templates()
     user_prompt = _render_prompt_template(
-        DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE,
+        user_prompt_template,
         {
             "BUSINESS_DATE": business_date,
             "SOURCE_DATE": source_date,

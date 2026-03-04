@@ -1,10 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from typing import Any
 from urllib import request
 
@@ -47,6 +48,7 @@ TASK_PAPER_READING_STAGE2 = "paper_reading_stage2_report"
 DEFAULT_TEMPERATURE_STAGE1 = 1
 DEFAULT_TEMPERATURE_STAGE2 = 1
 PDF_DOWNLOAD_TIMEOUT_SECONDS = 90
+TMP_DIR_ENV_NAME = "DEEPLAB_TMP_DIR"
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,13 @@ def _render_prompt_template(template: str, variables: dict[str, str]) -> str:
     for key, value in variables.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
     return rendered.strip()
+
+
+def _runtime_tmp_dir() -> str:
+    configured = os.getenv(TMP_DIR_ENV_NAME, "").strip()
+    candidate = Path(configured) if configured else Path(gettempdir())
+    candidate.mkdir(parents=True, exist_ok=True)
+    return str(candidate)
 
 
 async def _get_reading_prompt_templates() -> tuple[str, str, str, str]:
@@ -440,7 +449,7 @@ async def _read_single_paper(
     invocation_stage1: LLMInvocationLog | None = None
     invocation_stage2: LLMInvocationLog | None = None
 
-    with TemporaryDirectory(prefix="deeplab-paper-read-", dir="/tmp") as tmp_dir:
+    with TemporaryDirectory(prefix="deeplab-paper-read-", dir=_runtime_tmp_dir()) as tmp_dir:
         pdf_path = Path(tmp_dir) / f"{paper.id}.pdf"
         await asyncio.to_thread(_download_pdf, pdf_url, pdf_path)
 

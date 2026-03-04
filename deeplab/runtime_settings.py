@@ -162,6 +162,40 @@ DEFAULT_READING_STAGE2_USER_PROMPT_TEMPLATE = """
 2. 不要再使用 ```markdown 代码围栏包裹整篇报告。
 """.strip()
 
+DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT = (
+    "你是严谨的科研工作日报 Agent。"
+    "你将基于用户前一天的真实行为记录生成中文 Markdown 日报。"
+    "禁止虚构输入中不存在的信息，内容要具体、可执行。"
+)
+
+DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE = """
+请基于以下“用户行为汇总”生成 {{BUSINESS_DATE}} 的工作日报。
+
+你必须严格输出且只输出以下三节（Markdown 标题）：
+## 昨日工作总结
+要求：针对输入中的真实行为给出精简分条列点（`-` 列表），强调已完成事项、关键进展、阻塞点。
+
+## 今日工作规划
+要求：结合“当前未完成任务 + 昨日进展”给出今日计划，分条列点，明确优先级和可执行动作。
+
+## 工作建议
+要求：给出面向当前研究与工程推进的建议，可包含研究创新点、验证路径、实验设计、风险控制等，同样分条列点。
+
+约束：
+1. 所有结论必须能在输入中找到依据，不得杜撰。
+2. 不要输出除上述三节外的其他大标题。
+3. 输出必须是 Markdown 正文，不要包裹代码围栏。
+
+【业务日期】
+{{BUSINESS_DATE}}
+
+【来源日期标记】
+{{SOURCE_DATE}}
+
+【用户行为汇总】
+{{ACTIVITY_MARKDOWN}}
+""".strip()
+
 DEFAULT_KNOWLEDGE_CANDIDATE_SYSTEM_PROMPT = (
     "你是科研知识库中的“研究问题抽象器”。"
     "你的目标是抽取可复用、可跨论文比较的研究问题，而不是复述某篇论文的具体解法。"
@@ -372,6 +406,18 @@ RUNTIME_SETTING_SPECS: dict[str, dict[str, Any]] = {
         "description": "支持占位符：{{PAPER_ID}} {{PAPER_TITLE}} {{STAGE1_RESULT}} {{PAPER_OCR_TEXT}}。",
         "is_secret": False,
         "default": DEFAULT_READING_STAGE2_USER_PROMPT_TEMPLATE,
+    },
+    "daily_work_report_system_prompt": {
+        "label": "日报 System Prompt",
+        "description": "AI 工作日报生成系统提示词。",
+        "is_secret": False,
+        "default": DEFAULT_DAILY_WORK_REPORT_SYSTEM_PROMPT,
+    },
+    "daily_work_report_user_prompt_template": {
+        "label": "日报 User Prompt 模板",
+        "description": "支持占位符：{{BUSINESS_DATE}} {{SOURCE_DATE}} {{ACTIVITY_MARKDOWN}}。",
+        "is_secret": False,
+        "default": DEFAULT_DAILY_WORK_REPORT_USER_PROMPT_TEMPLATE,
     },
     "knowledge_candidate_system_prompt": {
         "label": "知识库候选问题 System Prompt",

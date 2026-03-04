@@ -59,8 +59,8 @@ const SECTION_CONFIGS: SectionConfig[] = [
   {
     key: 'prompt',
     title: 'Prompt 配置',
-    subtitle: '初筛、精读与知识库提示词模板',
-    description: '集中维护初筛、精读和知识库提炼阶段 prompt，保存后立即生效。',
+    subtitle: '初筛、精读、日报与知识库提示词模板',
+    description: '集中维护初筛、精读、日报和知识库提炼阶段 prompt，保存后立即生效。',
     settingKeys: [
       'initial_screening_system_prompt',
       'initial_screening_user_prompt_template',
@@ -68,6 +68,8 @@ const SECTION_CONFIGS: SectionConfig[] = [
       'reading_stage1_user_prompt_template',
       'reading_stage2_system_prompt',
       'reading_stage2_user_prompt_template',
+      'daily_work_report_system_prompt',
+      'daily_work_report_user_prompt_template',
       'knowledge_candidate_system_prompt',
       'knowledge_candidate_user_prompt_template',
       'knowledge_final_system_prompt',

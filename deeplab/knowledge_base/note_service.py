@@ -2,8 +2,7 @@ import uuid
 import re
 from typing import Any
 
-from tortoise.expressions import Q
-from tortoise.functions import Count
+from deeplab.db.query import Count, Q
 
 from deeplab.model import (
     KnowledgeNote,

@@ -6,12 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus
 
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
-from tortoise import Tortoise
-from tortoise.contrib.fastapi import RegisterTortoise
 
 from deeplab.api.presenters import (
     _daily_work_report_to_dict,
@@ -49,11 +46,8 @@ from deeplab.daily_papers.paper_reading import (
     STAGE_PAPER_READING,
     run_paper_reading,
 )
-from deeplab.db.schema_setup import (
-    ensure_daily_work_report_schema_columns,
-    ensure_knowledge_note_schema_columns,
-    normalize_knowledge_note_schema_columns,
-)
+from deeplab.db.engine import init_duckdb, open_session
+from deeplab.db.migrate import apply_migrations, default_migrations_dir
 from deeplab.knowledge_base.embedding import (
     get_embedding_download_status,
     set_embedding_model_name,
@@ -123,33 +117,25 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def _build_postgres_dsn() -> str:
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "")
-    host = os.getenv("POSTGRES_HOST", "127.0.0.1")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    db_name = os.getenv("POSTGRES_DB", "deeplab")
-    return f"postgres://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{quote_plus(db_name)}"
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with RegisterTortoise(
-        app=app,
-        db_url=_build_postgres_dsn(),
-        modules={"models": ["deeplab.model"]},
-        generate_schemas=False,
-        use_tz=True,
-        timezone="UTC",
-    ):
-        await normalize_knowledge_note_schema_columns()
-        await ensure_knowledge_note_schema_columns()
-        await ensure_daily_work_report_schema_columns()
-        await Tortoise.generate_schemas(safe=True)
-        yield
+    init_duckdb()
+    apply_migrations(migrations_dir=default_migrations_dir(), verbose=False)
+    yield
 
 
 app = FastAPI(title="DeepLab API", lifespan=lifespan)
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.middleware("http")
+async def db_session_middleware(request, call_next):
+    async with open_session():
+        return await call_next(request)
 
 
 @app.post("/fetch_papers")

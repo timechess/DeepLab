@@ -10,4 +10,8 @@ wheels/
 .venv
 
 .env
+deeplab_data/
 persist/
+desktop/.bundle/
+desktop/dist/
+desktop/node_modules/

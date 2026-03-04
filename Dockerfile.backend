@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY deeplab ./deeplab
 COPY scripts ./scripts
 
-RUN uv sync --frozen --no-dev
+RUN uv sync --no-dev
 RUN mkdir -p /app/persist/fastembed
 
 EXPOSE 8000

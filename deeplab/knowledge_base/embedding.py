@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Any
 
 import numpy as np
@@ -12,7 +13,8 @@ DEFAULT_EMBEDDING_MODEL = os.getenv(
     "KNOWLEDGE_EMBEDDING_MODEL",
     "BAAI/bge-small-en-v1.5",
 )
-EMBEDDING_CACHE_PATH = os.getenv("FASTEMBED_CACHE_PATH")
+EMBEDDING_CACHE_DIR_ENV_KEYS = ("DEEPLAB_EMBED_CACHE_DIR", "FASTEMBED_CACHE_PATH")
+DEFAULT_EMBEDDING_CACHE_DIRNAME = "deeplab-fastembed-cache"
 
 _CURRENT_EMBEDDING_MODEL = DEFAULT_EMBEDDING_MODEL
 _EMBEDDER: Any | None = None
@@ -21,7 +23,20 @@ _STATE_LOCK = threading.Lock()
 
 
 def get_embedding_cache_root() -> Path:
-    return Path(EMBEDDING_CACHE_PATH or "/tmp/deeplab-fastembed-cache")
+    configured_path: str | None = None
+    for env_name in EMBEDDING_CACHE_DIR_ENV_KEYS:
+        raw = os.getenv(env_name, "").strip()
+        if raw:
+            configured_path = raw
+            break
+
+    root = (
+        Path(configured_path)
+        if configured_path
+        else Path(gettempdir()) / DEFAULT_EMBEDDING_CACHE_DIRNAME
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _now_iso() -> str:
@@ -150,9 +165,10 @@ def _create_embedder(model_name: str) -> Any:
             "缺少 fastembed 依赖，请安装后重试（例如: uv add fastembed faiss-cpu）。"
         ) from exc
 
-    kwargs: dict[str, Any] = {"model_name": model_name}
-    if EMBEDDING_CACHE_PATH:
-        kwargs["cache_dir"] = EMBEDDING_CACHE_PATH
+    kwargs: dict[str, Any] = {
+        "model_name": model_name,
+        "cache_dir": str(get_embedding_cache_root()),
+    }
     return TextEmbedding(**kwargs)
 
 
