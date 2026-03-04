@@ -501,11 +501,14 @@ class QuerySet(Generic[TModel]):
             )
             return delete_rows(sql, params)
 
+        # DuckDB does not accept table aliases in DELETE predicates
+        # (e.g. DELETE ... WHERE t0."id" = ?), so strip the base alias.
+        delete_where_clause = where_clause.replace("t0.", "")
         sql = " ".join(
             part
             for part in [
                 f"DELETE FROM {_quote_ident(self.model._meta.table)}",
-                where_clause,
+                delete_where_clause,
             ]
             if part
         )

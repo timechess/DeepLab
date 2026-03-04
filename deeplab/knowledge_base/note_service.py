@@ -5,6 +5,7 @@ from typing import Any
 from deeplab.db.query import Count, Q
 
 from deeplab.model import (
+    DailyWorkNoteSnapshot,
     KnowledgeNote,
     KnowledgeNoteLink,
     KnowledgeQuestion,
@@ -741,6 +742,7 @@ async def delete_knowledge_note(*, note_id: uuid.UUID) -> dict[str, Any] | None:
     if note is None:
         return None
 
+    deleted_snapshots = await DailyWorkNoteSnapshot.filter(note=note).delete()
     deleted_outgoing = await KnowledgeNoteLink.filter(source_note=note).delete()
     deleted_incoming = await KnowledgeNoteLink.filter(target_type="note", target_id=str(note.id)).delete()
     deleted_notes = await KnowledgeNote.filter(id=note_id).delete()
@@ -750,6 +752,7 @@ async def delete_knowledge_note(*, note_id: uuid.UUID) -> dict[str, Any] | None:
     return {
         "deleted": True,
         "noteId": str(note_id),
+        "deletedSnapshots": int(deleted_snapshots),
         "deletedOutgoingLinks": int(deleted_outgoing),
         "deletedIncomingLinks": int(deleted_incoming),
     }

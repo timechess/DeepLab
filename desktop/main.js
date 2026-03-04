@@ -19,6 +19,7 @@ let logStream = null;
 let runtimePaths = null;
 let frontendBaseUrl = '';
 let isShuttingDown = false;
+let isClosePromptVisible = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -397,6 +398,8 @@ async function createMainWindow() {
     minHeight: 720,
     show: false,
     title: 'DeepLab',
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -427,8 +430,38 @@ async function createMainWindow() {
       return;
     }
     event.preventDefault();
-    mainWindow.hide();
-    writeLog('app', 'Main window hidden; services continue running in background');
+    if (isClosePromptVisible) {
+      return;
+    }
+
+    isClosePromptVisible = true;
+    void (async () => {
+      try {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: '关闭提醒',
+          message: '请先确认所有工作流已完成。',
+          detail:
+            '点击“最小化到任务栏”可让应用继续在后台运行任务；点击“确认退出”将停止后台服务并退出应用。',
+          buttons: ['最小化到任务栏', '确认退出'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+
+        if (result.response === 1) {
+          void shutdownAndExit(0);
+          return;
+        }
+
+        if (!mainWindow.isMinimized()) {
+          mainWindow.minimize();
+        }
+        writeLog('app', 'Main window minimized to taskbar; services continue running in background');
+      } finally {
+        isClosePromptVisible = false;
+      }
+    })();
   });
   mainWindow.on('closed', () => {
     mainWindow = null;

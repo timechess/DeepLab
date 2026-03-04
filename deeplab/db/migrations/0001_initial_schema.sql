@@ -61,8 +61,7 @@ CREATE TABLE IF NOT EXISTS workflow_stage_executions (
     "outputPayload" JSON,
     "errorMessage" TEXT,
     "startedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "finishedAt" TIMESTAMPTZ,
-    FOREIGN KEY ("workflowId") REFERENCES workflow_executions (id)
+    "finishedAt" TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_stage_executions_workflow_id ON workflow_stage_executions ("workflowId");
 CREATE INDEX IF NOT EXISTS idx_workflow_stage_executions_stage ON workflow_stage_executions (stage);
@@ -84,9 +83,7 @@ CREATE TABLE IF NOT EXISTS llm_invocation_logs (
     status VARCHAR NOT NULL DEFAULT 'running',
     "latencyMs" INTEGER,
     "errorMessage" TEXT,
-    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY ("workflowId") REFERENCES workflow_executions (id),
-    FOREIGN KEY ("stageExecutionId") REFERENCES workflow_stage_executions (id)
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_llm_invocation_logs_provider ON llm_invocation_logs (provider);
 CREATE INDEX IF NOT EXISTS idx_llm_invocation_logs_model ON llm_invocation_logs (model);
@@ -107,10 +104,7 @@ CREATE TABLE IF NOT EXISTS paper_filtering_runs (
     summary TEXT,
     "errorMessage" TEXT,
     "startedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "finishedAt" TIMESTAMPTZ,
-    FOREIGN KEY ("workflowId") REFERENCES workflow_executions (id),
-    FOREIGN KEY ("stageExecutionId") REFERENCES workflow_stage_executions (id),
-    FOREIGN KEY ("llmInvocationId") REFERENCES llm_invocation_logs (id)
+    "finishedAt" TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_paper_filtering_runs_trigger_type ON paper_filtering_runs ("triggerType");
 CREATE INDEX IF NOT EXISTS idx_paper_filtering_runs_status ON paper_filtering_runs (status);
@@ -126,9 +120,7 @@ CREATE TABLE IF NOT EXISTS paper_filtering_decisions (
     rank INTEGER,
     extra JSON NOT NULL DEFAULT CAST('{}' AS JSON),
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (filtering_run_id, paper_id),
-    FOREIGN KEY (filtering_run_id) REFERENCES paper_filtering_runs (id),
-    FOREIGN KEY (paper_id) REFERENCES papers (id)
+    UNIQUE (filtering_run_id, paper_id)
 );
 CREATE INDEX IF NOT EXISTS idx_paper_filtering_decisions_selected ON paper_filtering_decisions (selected);
 CREATE INDEX IF NOT EXISTS idx_paper_filtering_decisions_created_at ON paper_filtering_decisions ("createdAt");
@@ -145,10 +137,7 @@ CREATE TABLE IF NOT EXISTS paper_reading_runs (
     "failedPaperIds" JSON NOT NULL DEFAULT CAST('[]' AS JSON),
     "errorMessage" TEXT,
     "startedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "finishedAt" TIMESTAMPTZ,
-    FOREIGN KEY (workflow_id) REFERENCES workflow_executions (id),
-    FOREIGN KEY (stage_execution_id) REFERENCES workflow_stage_executions (id),
-    FOREIGN KEY ("sourceFilteringRunId") REFERENCES paper_filtering_runs (id)
+    "finishedAt" TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_paper_reading_runs_trigger_type ON paper_reading_runs ("triggerType");
 CREATE INDEX IF NOT EXISTS idx_paper_reading_runs_status ON paper_reading_runs (status);
@@ -174,11 +163,7 @@ CREATE TABLE IF NOT EXISTS paper_reading_reports (
     comment TEXT NOT NULL DEFAULT '',
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (reading_run_id, paper_id),
-    FOREIGN KEY (reading_run_id) REFERENCES paper_reading_runs (id),
-    FOREIGN KEY (paper_id) REFERENCES papers (id),
-    FOREIGN KEY ("llmInvocationStage1Id") REFERENCES llm_invocation_logs (id),
-    FOREIGN KEY ("llmInvocationStage2Id") REFERENCES llm_invocation_logs (id)
+    UNIQUE (reading_run_id, paper_id)
 );
 CREATE INDEX IF NOT EXISTS idx_paper_reading_reports_status ON paper_reading_reports (status);
 CREATE INDEX IF NOT EXISTS idx_paper_reading_reports_created_at ON paper_reading_reports ("createdAt");
@@ -208,10 +193,7 @@ CREATE TABLE IF NOT EXISTS knowledge_solutions (
     limitations TEXT NOT NULL,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (question_id, report_id),
-    FOREIGN KEY (question_id) REFERENCES knowledge_questions (id),
-    FOREIGN KEY (paper_id) REFERENCES papers (id),
-    FOREIGN KEY (report_id) REFERENCES paper_reading_reports (id)
+    UNIQUE (question_id, report_id)
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_solutions_created_at ON knowledge_solutions ("createdAt");
 CREATE INDEX IF NOT EXISTS idx_knowledge_solutions_updated_at ON knowledge_solutions ("updatedAt");
@@ -229,10 +211,7 @@ CREATE TABLE IF NOT EXISTS knowledge_extraction_runs (
     llm_invocation_stage2_id UUID,
     "startedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "finishedAt" TIMESTAMPTZ,
-    "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (report_id) REFERENCES paper_reading_reports (id),
-    FOREIGN KEY (llm_invocation_stage1_id) REFERENCES llm_invocation_logs (id),
-    FOREIGN KEY (llm_invocation_stage2_id) REFERENCES llm_invocation_logs (id)
+    "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_extraction_runs_status ON knowledge_extraction_runs (status);
 CREATE INDEX IF NOT EXISTS idx_knowledge_extraction_runs_started_at ON knowledge_extraction_runs ("startedAt");
@@ -257,8 +236,7 @@ CREATE TABLE IF NOT EXISTS knowledge_note_links (
     target_id VARCHAR NOT NULL,
     target_label TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (source_note_id, target_type, target_id),
-    FOREIGN KEY (source_note_id) REFERENCES knowledge_notes (id)
+    UNIQUE (source_note_id, target_type, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_note_links_created_at ON knowledge_note_links (created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_note_links_target_type_target_id ON knowledge_note_links (target_type, target_id);
@@ -283,8 +261,7 @@ CREATE TABLE IF NOT EXISTS daily_work_reports (
     "reportMarkdown" TEXT NOT NULL DEFAULT '',
     "errorMessage" TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY ("workflowId") REFERENCES workflow_executions (id)
+    "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_daily_work_reports_status ON daily_work_reports (status);
 CREATE INDEX IF NOT EXISTS idx_daily_work_reports_created_at ON daily_work_reports ("createdAt");
@@ -296,8 +273,7 @@ CREATE TABLE IF NOT EXISTS daily_work_note_snapshots (
     "snapshotMarkdown" TEXT NOT NULL DEFAULT '',
     "noteUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "snapshotUpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY ("noteId") REFERENCES knowledge_notes (id)
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_daily_work_note_snapshots_note_updated_at ON daily_work_note_snapshots ("noteUpdatedAt");
 CREATE INDEX IF NOT EXISTS idx_daily_work_note_snapshots_snapshot_updated_at ON daily_work_note_snapshots ("snapshotUpdatedAt");

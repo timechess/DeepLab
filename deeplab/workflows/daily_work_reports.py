@@ -85,22 +85,23 @@ def _strip_outer_markdown_fence(text: str) -> str:
     return content
 
 
-def _has_heading(markdown: str, heading: str) -> bool:
-    pattern = rf"(?m)^#{1,6}\s*{re.escape(heading)}\s*$"
-    return re.search(pattern, markdown) is not None
+def _normalize_escaped_markdown_text(text: str) -> str:
+    content = str(text or "").strip()
+    if len(content) >= 2 and content[0] == content[-1] and content[0] in {'"', "'"}:
+        content = content[1:-1]
+    if "\\n" in content or "\\r" in content or "\\t" in content:
+        content = (
+            content.replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\r", "\n")
+            .replace("\\t", "\t")
+        )
+    return content
 
 
 def normalize_daily_work_report_markdown(markdown: str) -> str:
-    normalized = _strip_outer_markdown_fence(markdown)
-    required_headings = ["昨日工作总结", "今日工作规划", "工作建议"]
-    missing = [title for title in required_headings if not _has_heading(normalized, title)]
-    if not missing:
-        return normalized.strip()
-
-    appended = normalized.strip()
-    for title in missing:
-        appended += f"\n\n## {title}\n- （模型未生成该部分内容）"
-    return appended.strip()
+    normalized = _strip_outer_markdown_fence(_normalize_escaped_markdown_text(markdown))
+    return normalized.strip()
 
 
 def _format_task_item(task: TodoTask) -> str:
@@ -928,6 +929,7 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
 
     collected_source_markdown = ""
     generated_report_markdown = ""
+    skip_report_persistence = False
 
     try:
         collect_payload = await get_latest_succeeded_stage_payload(workflow, STAGE_COLLECT_USER_ACTIVITY)
@@ -991,6 +993,7 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
                 has_user_activity = int(yesterday_activity_count) > 0
 
         if not has_user_activity:
+            skip_report_persistence = True
             generate_stage = await WorkflowStageExecution.create(
                 workflow=workflow,
                 stage=STAGE_GENERATE_DAILY_REPORT,
@@ -1081,16 +1084,17 @@ async def execute_daily_work_report_workflow(workflow: WorkflowExecution) -> dic
             "status": "succeeded",
         }
     except Exception as exc:
-        await _persist_daily_work_report(
-            workflow=workflow,
-            business_date=business_date or datetime.now(tz=UTC).date().isoformat(),
-            source_date=source_date or "",
-            status="failed",
-            source_markdown=collected_source_markdown,
-            activity_summary={},
-            report_markdown=generated_report_markdown,
-            error_message=str(exc),
-        )
+        if not skip_report_persistence:
+            await _persist_daily_work_report(
+                workflow=workflow,
+                business_date=business_date or datetime.now(tz=UTC).date().isoformat(),
+                source_date=source_date or "",
+                status="failed",
+                source_markdown=collected_source_markdown,
+                activity_summary={},
+                report_markdown=generated_report_markdown,
+                error_message=str(exc),
+            )
         await finish_workflow(workflow, status="failed", error_message=str(exc))
         raise
 
