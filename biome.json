@@ -1,0 +1,85 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": {
+    "enabled": false,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "src/**",
+      "./*.json",
+      "./*.js",
+      "./*.ts",
+      "./*.mts",
+      "./*.mjs",
+      "!!dist",
+      "!!src-tauri",
+      "!!node_modules"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "domains": {
+      "project": "all",
+      "react": "all",
+      "next": "all"
+    },
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnresolvedImports": "off",
+        "useHookAtTopLevel": "error",
+        "useImportExtensions": "off"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "useAwaitThenable": "error"
+      },
+      "suspicious": {
+        "useGoogleFontDisplay": "error",
+        "noDocumentImportInPage": "error",
+        "noHeadImportInDocument": "error"
+      },
+      "style": {
+        "noHeadElement": "error",
+        "useComponentExportOnlyModules": {
+          "level": "error",
+          "options": {
+            "allowExportNames": ["metadata"]
+          }
+        }
+      },
+      "performance": {
+        "noImgElement": "off"
+      }
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    },
+    "globals": []
+  }
+}
