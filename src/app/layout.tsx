@@ -1,15 +1,17 @@
-"use client";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Atkinson_Hyperlegible, Crimson_Pro } from "next/font/google";
+import { AppNav } from "@/components/AppNav";
 import "@/styles/globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const crimson = Crimson_Pro({
+  variable: "--font-display",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const atkinson = Atkinson_Hyperlegible({
+  variable: "--font-body",
   subsets: ["latin"],
+  weight: ["400", "700"],
 });
 
 export default function RootLayout({
@@ -18,10 +20,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+    <html lang="zh-CN">
+      <body className={`${crimson.variable} ${atkinson.variable} antialiased`}>
+        <AppNav />
         {children}
       </body>
     </html>

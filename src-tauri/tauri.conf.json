@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "tauri-nextjs-template",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "deeplab",
   "build": {
     "beforeDevCommand": "pnpm dev:next",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-nextjs-template",
+        "title": "DeepLab",
         "width": 800,
         "height": 600,
         "resizable": true,
@@ -33,5 +33,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "sql": {
+      "preload": [
+        "sqlite:deeplab.sqlite"
+      ]
+    }
   }
 }

@@ -1,24 +1,82 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --color-bg: #060b14;
+  --color-text: #e5ecff;
+  --color-muted: #8ba2c7;
+  --color-cta: #4f7dff;
+  --color-surface: #0f1724;
+  --color-border: #1f2a3d;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  color-scheme: dark;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  background:
+    radial-gradient(
+      circle at 12% 20%,
+      rgba(79, 125, 255, 0.14),
+      transparent 40%
+    ),
+    radial-gradient(circle at 85% 0%, rgba(14, 165, 233, 0.08), transparent 35%),
+    var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    var(--font-body), "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+}
+
+h1,
+h2,
+h3 {
+  font-family:
+    var(--font-display), "Noto Serif CJK SC", "Songti SC", "STSong",
+    "Source Han Serif SC", serif;
+  letter-spacing: -0.02em;
+}
+
+a {
+  color: inherit;
+}
+
+input,
+textarea,
+select,
+button {
+  color: var(--color-text);
+}
+
+input,
+textarea,
+select {
+  background-color: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+code,
+pre {
+  font-family:
+    "Fira Code", "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular",
+    ui-monospace, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
+    transition-duration: 1ms;
+    scroll-behavior: auto;
+  }
 }

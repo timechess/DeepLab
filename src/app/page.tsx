@@ -1,100 +1,124 @@
 "use client";
-import { invoke } from "@tauri-apps/api/core";
-import Image from "next/image";
-import { useCallback, useState } from "react";
-import { RoundedButton } from "@/components/RoundedButton";
 
-export default function Home() {
-  const [greeted, setGreeted] = useState<string | null>(null);
-  const greet = useCallback((): void => {
-    invoke<string>("greet")
-      .then((s) => {
-        setGreeted(s);
-      })
-      .catch((err: unknown) => {
-        console.error(err);
-      });
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { EmptyStateToday } from "@/components/EmptyStateToday";
+import { RecommendationSummaryCard } from "@/components/RecommendationSummaryCard";
+import { RecommendedPaperCard } from "@/components/RecommendedPaperCard";
+import {
+  getTodayPaperRecommendation,
+  startPaperRecommendationWorkflow,
+  type TodayRecommendationResponse,
+} from "@/lib/workflow";
+
+export default function HomePage() {
+  const [data, setData] = useState<TodayRecommendationResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [triggering, setTriggering] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadToday = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await getTodayPaperRecommendation();
+      setData(response);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : String(loadError),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadToday();
+  }, [loadToday]);
+
+  const handleTrigger = useCallback(async () => {
+    setTriggering(true);
+    try {
+      const response = await startPaperRecommendationWorkflow();
+      window.location.href = `/workflow?workflowId=${response.workflowId}`;
+    } catch (triggerError) {
+      setTriggering(false);
+      setError(
+        triggerError instanceof Error
+          ? triggerError.message
+          : String(triggerError),
+      );
+    }
   }, []);
 
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <main className="mx-auto min-h-screen w-full max-w-6xl px-6 py-10">
+      <header className="mb-10">
+        <p className="text-sm font-semibold tracking-[0.15em] text-[#8ba2c7]">
+          DeepLab
+        </p>
+        <h1 className="mt-3 font-serif text-5xl leading-[0.92] font-semibold text-[#e5ecff]">
+          今日 AI 论文推荐
+        </h1>
+        <p className="mt-3 max-w-3xl text-sm text-[#9fb0d0]">
+          基于当日新增候选论文进行自动初筛，支持后台执行、规则驱动和可审计输出。
+        </p>
+      </header>
 
-        <div className="flex flex-col gap-2 items-start">
-          <RoundedButton
-            onClick={greet}
-            title="Call &quot;greet&quot; from Rust"
+      {loading ? (
+        <section className="rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-8 text-[#9fb0d0]">
+          正在加载今日数据...
+        </section>
+      ) : null}
+
+      {!loading && error ? (
+        <section className="rounded-3xl border border-[#6e2a45] bg-[#2a1020] p-8 text-[#ff9fba]">
+          {error}
+        </section>
+      ) : null}
+
+      {!loading && !error && data?.status === "none" ? (
+        <EmptyStateToday loading={triggering} onTrigger={handleTrigger} />
+      ) : null}
+
+      {!loading && !error && data?.status === "running" ? (
+        <section className="rounded-3xl border border-[#2d3a52] bg-[#101a2c] p-8 text-[#9fc1ff]">
+          <p>今日工作流正在后台运行。</p>
+          <Link
+            href={
+              data.workflowId
+                ? `/workflow?workflowId=${data.workflowId}`
+                : "/workflow"
+            }
+            className="mt-4 inline-flex rounded-full border border-[#4f7dff] px-4 py-2 text-sm font-semibold text-[#cfe0ff]"
+          >
+            前往 /workflow 查看进度
+          </Link>
+        </section>
+      ) : null}
+
+      {!loading && !error && data?.status === "failed" ? (
+        <section className="rounded-3xl border border-[#6e2a45] bg-[#2a1020] p-8 text-[#ff9fba]">
+          <p>今日工作流执行失败：{data.error ?? "未知错误"}</p>
+          <div className="mt-4">
+            <EmptyStateToday loading={triggering} onTrigger={handleTrigger} />
+          </div>
+        </section>
+      ) : null}
+
+      {!loading && !error && data?.status === "ready" ? (
+        <div className="space-y-8">
+          <RecommendationSummaryCard
+            dayKey={data.dayKey}
+            summary={data.summary ?? ""}
           />
-          <p className="break-words w-md">
-            {greeted ?? "Click the button to call the Rust function"}
-          </p>
+          <section className="grid gap-4">
+            {data.papers?.map((paper) => (
+              <RecommendedPaperCard key={paper.id} paper={paper} />
+            ))}
+          </section>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      ) : null}
+    </main>
   );
 }
