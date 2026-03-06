@@ -21,8 +21,6 @@ jobs:
             args: "--target x86_64-pc-windows-msvc --no-sign"
           - platform: "macos-latest"
             args: "--target aarch64-apple-darwin --no-sign"
-          - platform: "macos-latest"
-            args: "--target x86_64-apple-darwin --no-sign"
 
     runs-on: ${{ matrix.platform }}
 
