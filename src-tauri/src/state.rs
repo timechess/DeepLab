@@ -38,12 +38,12 @@ pub fn now_rfc3339() -> String {
 }
 
 pub async fn init_state(app_handle: &AppHandle) -> Result<AppState, String> {
-  let app_data_dir = app_handle
+  let app_config_dir = app_handle
     .path()
-    .app_data_dir()
+    .app_config_dir()
     .map_err(|e| e.to_string())?;
-  std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-  let db_path = app_data_dir.join("deeplab.sqlite");
+  std::fs::create_dir_all(&app_config_dir).map_err(|e| e.to_string())?;
+  let db_path = app_config_dir.join("deeplab.sqlite");
   let db_url = format!("sqlite://{}", db_path.to_string_lossy());
 
   let options = SqliteConnectOptions::from_str(&db_url)
@@ -56,21 +56,6 @@ pub async fn init_state(app_handle: &AppHandle) -> Result<AppState, String> {
     .connect_with(options)
     .await
     .map_err(|e| e.to_string())?;
-
-  sqlx::raw_sql(include_str!("../resource/init_db.sql"))
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-  sqlx::raw_sql(include_str!("../resource/migrations/002_add_rules.sql"))
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-  sqlx::raw_sql(include_str!(
-    "../resource/migrations/003_add_paper_recommendations.sql"
-  ))
-  .execute(&pool)
-  .await
-  .map_err(|e| e.to_string())?;
   Ok(AppState {
     pool,
     http: Client::new(),

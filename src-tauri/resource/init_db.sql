@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS papers (
 CREATE TABLE IF NOT EXISTS paper_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   paper_id TEXT NOT NULL UNIQUE,
+  workflow_id INTEGER,
+  source TEXT NOT NULL DEFAULT 'huggingface|arxiv',
+  ocr_model TEXT,
+  status TEXT NOT NULL DEFAULT 'ready',
+  error TEXT,
   comment TEXT,
   report TEXT,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -112,8 +117,65 @@ CREATE TABLE IF NOT EXISTS workflows (
   updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS paper_recommendations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day_key TEXT NOT NULL UNIQUE,
+  summary TEXT NOT NULL,
+  selected_ids_json TEXT NOT NULL,
+  decisions_json TEXT NOT NULL,
+  candidate_ids_json TEXT NOT NULL,
+  workflow_id INTEGER,
+  triggered_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS note_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id INTEGER NOT NULL,
+  link_type TEXT NOT NULL CHECK (link_type IN ('linked_paper', 'linked_task', 'linked_note')),
+  target_paper_id TEXT,
+  target_task_id INTEGER,
+  target_note_id INTEGER,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+  FOREIGN KEY (target_paper_id) REFERENCES papers (id) ON DELETE CASCADE,
+  FOREIGN KEY (target_task_id) REFERENCES tasks (id) ON DELETE CASCADE,
+  FOREIGN KEY (target_note_id) REFERENCES notes (id) ON DELETE CASCADE,
+  CHECK (
+    (CASE WHEN target_paper_id IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN target_task_id IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN target_note_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+  )
+);
+
 CREATE INDEX IF NOT EXISTS idx_papers_published_at ON papers (publishedAt);
 CREATE INDEX IF NOT EXISTS idx_tasks_completed_date ON tasks (completedDate);
 CREATE INDEX IF NOT EXISTS idx_work_reports_date_range ON work_reports (startDate, endDate);
 CREATE INDEX IF NOT EXISTS idx_llm_logs_model ON llm_invocation_logs (model);
 CREATE INDEX IF NOT EXISTS idx_workflows_stage ON workflows (stage);
+CREATE INDEX IF NOT EXISTS idx_paper_recommendations_day_key ON paper_recommendations (day_key);
+CREATE INDEX IF NOT EXISTS idx_paper_reports_updatedAt ON paper_reports (updatedAt);
+CREATE INDEX IF NOT EXISTS idx_paper_reports_status ON paper_reports (status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_paper
+  ON note_links (note_id, link_type, target_paper_id)
+  WHERE target_paper_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_task
+  ON note_links (note_id, link_type, target_task_id)
+  WHERE target_task_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_note
+  ON note_links (note_id, link_type, target_note_id)
+  WHERE target_note_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_note_links_note_id ON note_links (note_id);
+CREATE INDEX IF NOT EXISTS idx_note_links_target_note_id ON note_links (target_note_id);
+CREATE INDEX IF NOT EXISTS idx_notes_title ON notes (title);
+CREATE INDEX IF NOT EXISTS idx_notes_updatedAt ON notes (updatedAt);

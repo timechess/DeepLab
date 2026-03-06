@@ -39,30 +39,6 @@ pub fn run() {
       sql: include_str!("../resource/init_db.sql"),
       kind: MigrationKind::Up,
     },
-    Migration {
-      version: 2,
-      description: "add_rules_table",
-      sql: include_str!("../resource/migrations/002_add_rules.sql"),
-      kind: MigrationKind::Up,
-    },
-    Migration {
-      version: 3,
-      description: "add_paper_recommendations",
-      sql: include_str!("../resource/migrations/003_add_paper_recommendations.sql"),
-      kind: MigrationKind::Up,
-    },
-    Migration {
-      version: 4,
-      description: "add_paper_reading_fields",
-      sql: include_str!("../resource/migrations/004_add_paper_reading_fields.sql"),
-      kind: MigrationKind::Up,
-    },
-    Migration {
-      version: 5,
-      description: "add_note_links",
-      sql: include_str!("../resource/migrations/005_add_note_links.sql"),
-      kind: MigrationKind::Up,
-    },
   ];
 
   let builder = tauri::Builder::default()
