@@ -8,10 +8,11 @@ mod settings;
 mod state;
 mod tasks;
 mod types;
+mod work_report;
 
 use notes::{
   create_note_item, delete_note_item, get_note_detail, get_note_history, get_note_linked_context,
-  search_note_papers, update_note_content,
+  search_note_papers, search_note_work_reports, update_note_content,
 };
 use paper_reading::{
   get_paper_report_detail, get_paper_report_history, start_paper_reading_workflow,
@@ -29,17 +30,19 @@ use tasks::{
 };
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
+use work_report::{
+  get_today_work_report_overview, get_work_report_detail, get_work_report_history,
+  start_work_report_workflow,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  let migrations = vec![
-    Migration {
-      version: 1,
-      description: "init_deeplab_schema",
-      sql: include_str!("../resource/init_db.sql"),
-      kind: MigrationKind::Up,
-    },
-  ];
+  let migrations = vec![Migration {
+    version: 1,
+    description: "init_deeplab_schema",
+    sql: include_str!("../resource/init_db.sql"),
+    kind: MigrationKind::Up,
+  }];
 
   let builder = tauri::Builder::default()
     .plugin(tauri_plugin_fs::init())
@@ -85,6 +88,11 @@ pub fn run() {
       update_note_content,
       get_note_linked_context,
       search_note_papers,
+      search_note_work_reports,
+      get_today_work_report_overview,
+      start_work_report_workflow,
+      get_work_report_history,
+      get_work_report_detail,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

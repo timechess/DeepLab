@@ -92,7 +92,7 @@ export function DetailModal({
               </div>
 
               {paperTab === "rendered" ? (
-                <div className="paper-report-markdown">
+                <div className="report-markdown">
                   {paperDetail?.report ? (
                     <Streamdown plugins={paperPlugins}>
                       {paperDetail.report}

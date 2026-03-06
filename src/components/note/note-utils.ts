@@ -2,7 +2,7 @@ import type { JSONContent } from "@tiptap/core";
 import type { NoteLinkRefInput } from "@/lib/note";
 
 interface RefToken {
-  refType: "paper" | "task" | "note";
+  refType: "paper" | "task" | "note" | "work_report";
   refId: string;
   label: string;
 }
@@ -19,7 +19,8 @@ function walk(node: JSONContent | null | undefined, refs: RefToken[]): void {
       attrs?.refType &&
       (attrs.refType === "paper" ||
         attrs.refType === "task" ||
-        attrs.refType === "note") &&
+        attrs.refType === "note" ||
+        attrs.refType === "work_report") &&
       attrs.refId
     ) {
       refs.push({

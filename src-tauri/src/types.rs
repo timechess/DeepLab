@@ -106,6 +106,97 @@ pub struct PaperReportCommentInput {
   pub comment: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReportDeltaStats {
+  pub new_tasks: i64,
+  pub completed_tasks: i64,
+  pub new_comments: i64,
+  pub updated_comments: i64,
+  pub new_notes: i64,
+  pub updated_notes: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReportOverviewResponse {
+  pub day_key: String,
+  pub status: String,
+  pub can_trigger: bool,
+  pub block_reason: Option<String>,
+  pub workflow_id: Option<i64>,
+  pub report_id: Option<i64>,
+  pub report_updated_at: Option<String>,
+  pub stats: WorkReportDeltaStats,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReportListItemDto {
+  pub id: i64,
+  pub status: String,
+  pub start_date: String,
+  pub end_date: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReportHistoryResponse {
+  pub page: u32,
+  pub page_size: u32,
+  pub total: i64,
+  pub items: Vec<WorkReportListItemDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReportDetailDto {
+  pub id: i64,
+  pub report: String,
+  pub statistics: WorkReportDeltaStats,
+  pub start_date: String,
+  pub end_date: String,
+  pub workflow_id: Option<i64>,
+  pub created_at: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorSnapshotTask {
+  pub id: i64,
+  pub title: String,
+  pub description: Option<String>,
+  pub priority: String,
+  pub completed_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorSnapshotComment {
+  pub paper_id: String,
+  pub comment: String,
+  #[serde(default)]
+  pub paper_title: String,
+  #[serde(default)]
+  pub paper_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorSnapshotNote {
+  pub id: i64,
+  pub title: String,
+  pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorSnapshotDto {
+  pub tasks: Vec<BehaviorSnapshotTask>,
+  pub comments: Vec<BehaviorSnapshotComment>,
+  pub notes: Vec<BehaviorSnapshotNote>,
+  pub updated_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleDto {
@@ -210,10 +301,20 @@ pub struct NoteRefNoteDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NoteWorkReportLinkDto {
+  pub report_id: i64,
+  pub report_date: String,
+  pub start_date: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NoteLinkedContextDto {
   pub papers: Vec<NotePaperLinkDto>,
   pub tasks: Vec<NoteTaskLinkDto>,
   pub notes: Vec<NoteRefNoteDto>,
+  pub work_reports: Vec<NoteWorkReportLinkDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -222,6 +323,14 @@ pub struct NotePaperOptionDto {
   pub paper_id: String,
   pub title: String,
   pub has_report: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteWorkReportOptionDto {
+  pub report_id: i64,
+  pub report_date: String,
+  pub start_date: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

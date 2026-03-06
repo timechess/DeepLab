@@ -12,6 +12,8 @@ export function LinkedSidebar({
   onOpenPaper,
   onOpenTask,
 }: LinkedSidebarProps) {
+  const workReports = context.workReports ?? [];
+
   return (
     <aside className="sticky top-4 h-fit rounded-2xl border border-[#22314b] bg-[linear-gradient(160deg,#0f1724,#0d182a)] p-4 shadow-[0_16px_38px_rgba(0,0,0,0.35)]">
       <h2 className="font-serif text-2xl text-[#e5ecff]">关联内容</h2>
@@ -93,6 +95,24 @@ export function LinkedSidebar({
               className="block cursor-pointer rounded-xl border border-[#2d3a52] bg-[#101a2c] p-3 text-sm font-semibold text-[#dbe6ff] transition-colors hover:border-[#4f7dff] hover:bg-[#142033]"
             >
               {note.title}
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-4">
+        <p className="text-xs tracking-wide text-[#8ba2c7]">工作日报</p>
+        <div className="mt-2 space-y-2">
+          {workReports.length === 0 ? (
+            <p className="text-xs text-[#6f87ac]">暂无工作日报链接</p>
+          ) : null}
+          {workReports.map((report) => (
+            <Link
+              key={report.reportDate}
+              href={`/work_report/detail?reportId=${report.reportId}`}
+              className="block cursor-pointer rounded-xl border border-[#2d3a52] bg-[#101a2c] p-3 text-sm font-semibold text-[#dbe6ff] transition-colors hover:border-[#4f7dff] hover:bg-[#142033]"
+            >
+              {report.reportDate}
             </Link>
           ))}
         </div>

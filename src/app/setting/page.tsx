@@ -334,11 +334,19 @@ export default function SettingPage() {
                 Work Report Prompt
                 <div className="mt-2 rounded-xl border border-[#2d3a52] bg-[#142033] p-3">
                   <p className="text-xs font-semibold tracking-wide text-[#9fc1ff]">
-                    变量说明
+                    可用变量
                   </p>
-                  <p className="mt-2 text-xs text-[#9fc1ff]/90">
-                    当前该模板未约定固定变量，建议保持结构化输出要求。
-                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{BUSINESS_DATE}}"}
+                    </code>
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{SOURCE_DATE}}"}
+                    </code>
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{ACTIVITY_MARKDOWN}}"}
+                    </code>
+                  </div>
                 </div>
                 <textarea
                   rows={6}

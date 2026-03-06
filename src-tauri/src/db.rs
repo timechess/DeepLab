@@ -4,10 +4,13 @@ use crate::{
     DEFAULT_PAPER_FILTER_PROMPT, DEFAULT_PAPER_READING_PROMPT, DEFAULT_WORK_REPORT_PROMPT,
   },
   types::{
+    BehaviorSnapshotComment, BehaviorSnapshotDto, BehaviorSnapshotNote, BehaviorSnapshotTask,
     NoteDetailDto, NoteLinkRefInput, NoteLinkedContextDto, NoteListItemDto, NotePaperLinkDto,
-    NotePaperOptionDto, NoteRefNoteDto, NoteTaskLinkDto, PaperCardDto, PaperDecision,
-    PaperRecommendationResult, PaperReportDetailDto, PaperReportListItemDto, PersistPaper, RuleDto,
-    RuntimeSettingDto, RuntimeSettingRow, RuntimeSettingUpsertInput, TaskDto, WorkflowListItem,
+    NotePaperOptionDto, NoteRefNoteDto, NoteTaskLinkDto, NoteWorkReportLinkDto,
+    NoteWorkReportOptionDto, PaperCardDto, PaperDecision, PaperRecommendationResult,
+    PaperReportDetailDto, PaperReportListItemDto, PersistPaper, RuleDto, RuntimeSettingDto,
+    RuntimeSettingRow, RuntimeSettingUpsertInput, TaskDto, WorkReportDeltaStats,
+    WorkReportDetailDto, WorkReportListItemDto, WorkflowListItem,
   },
 };
 use serde_json::{json, Value};
@@ -620,6 +623,400 @@ pub async fn update_paper_report_comment_by_paper_id(
     return Err(String::from("paper report not found"));
   }
   Ok(())
+}
+
+pub async fn load_current_behavior_snapshot(
+  pool: &SqlitePool,
+) -> Result<BehaviorSnapshotDto, String> {
+  let task_rows = sqlx::query(
+    "SELECT id, title, description, priority, completedDate FROM tasks ORDER BY id ASC",
+  )
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  let comment_rows = sqlx::query(
+    "SELECT pr.paper_id, pr.comment, p.title, p.summary
+    FROM paper_reports pr
+    LEFT JOIN papers p ON p.id = pr.paper_id
+    WHERE comment IS NOT NULL AND trim(comment) <> ''
+    ORDER BY pr.paper_id ASC",
+  )
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  let note_rows = sqlx::query("SELECT id, title, content FROM notes ORDER BY id ASC")
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+  let tasks = task_rows
+    .into_iter()
+    .map(|row| -> Result<BehaviorSnapshotTask, String> {
+      Ok(BehaviorSnapshotTask {
+        id: row.try_get("id").map_err(|e| e.to_string())?,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        description: row.try_get("description").map_err(|e| e.to_string())?,
+        priority: normalize_task_priority(row.try_get("priority").map_err(|e| e.to_string())?),
+        completed_date: row.try_get("completedDate").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  let comments = comment_rows
+    .into_iter()
+    .map(|row| -> Result<BehaviorSnapshotComment, String> {
+      Ok(BehaviorSnapshotComment {
+        paper_id: row.try_get("paper_id").map_err(|e| e.to_string())?,
+        comment: row.try_get("comment").map_err(|e| e.to_string())?,
+        paper_title: row
+          .try_get::<Option<String>, _>("title")
+          .map_err(|e| e.to_string())?
+          .unwrap_or_default(),
+        paper_summary: row
+          .try_get::<Option<String>, _>("summary")
+          .map_err(|e| e.to_string())?
+          .unwrap_or_default(),
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  let notes = note_rows
+    .into_iter()
+    .map(|row| -> Result<BehaviorSnapshotNote, String> {
+      let raw_content: String = row.try_get("content").map_err(|e| e.to_string())?;
+      Ok(BehaviorSnapshotNote {
+        id: row.try_get("id").map_err(|e| e.to_string())?,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        content: normalize_note_content_to_markdown(&raw_content),
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  Ok(BehaviorSnapshotDto {
+    tasks,
+    comments,
+    notes,
+    updated_at: None,
+  })
+}
+
+pub async fn load_behavior_snapshot(
+  pool: &SqlitePool,
+) -> Result<Option<BehaviorSnapshotDto>, String> {
+  let row =
+    sqlx::query("SELECT tasks, comments, notes, updatedAt FROM behavior_snapshots WHERE id = 1")
+      .fetch_optional(pool)
+      .await
+      .map_err(|e| e.to_string())?;
+
+  if let Some(row) = row {
+    let tasks_json: String = row.try_get("tasks").map_err(|e| e.to_string())?;
+    let comments_json: String = row.try_get("comments").map_err(|e| e.to_string())?;
+    let notes_json: String = row.try_get("notes").map_err(|e| e.to_string())?;
+    let tasks = serde_json::from_str::<Vec<BehaviorSnapshotTask>>(&tasks_json).unwrap_or_default();
+    let comments =
+      serde_json::from_str::<Vec<BehaviorSnapshotComment>>(&comments_json).unwrap_or_default();
+    let notes = serde_json::from_str::<Vec<BehaviorSnapshotNote>>(&notes_json)
+      .unwrap_or_default()
+      .into_iter()
+      .map(|note| BehaviorSnapshotNote {
+        content: normalize_note_content_to_markdown(&note.content),
+        ..note
+      })
+      .collect();
+
+    return Ok(Some(BehaviorSnapshotDto {
+      tasks,
+      comments,
+      notes,
+      updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+    }));
+  }
+
+  Ok(None)
+}
+
+pub async fn find_today_work_report(
+  pool: &SqlitePool,
+  day_key: &str,
+) -> Result<Option<(i64, Option<i64>, String)>, String> {
+  let row = sqlx::query(
+    "SELECT id, workflow_id, updatedAt
+    FROM work_reports
+    WHERE endDate = ?1
+    ORDER BY id DESC
+    LIMIT 1",
+  )
+  .bind(day_key)
+  .fetch_optional(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  row
+    .map(|r| {
+      Ok((
+        r.try_get("id").map_err(|e| e.to_string())?,
+        r.try_get("workflow_id").map_err(|e| e.to_string())?,
+        r.try_get("updatedAt").map_err(|e| e.to_string())?,
+      ))
+    })
+    .transpose()
+}
+
+pub async fn save_work_report_result(
+  pool: &SqlitePool,
+  workflow_id: i64,
+  report: &str,
+  stats: &WorkReportDeltaStats,
+  start_date: &str,
+  end_date: &str,
+  snapshot: &BehaviorSnapshotDto,
+) -> Result<i64, String> {
+  let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+  let stats_json = serde_json::to_string(stats).map_err(|e| e.to_string())?;
+  let tasks_json = serde_json::to_string(&snapshot.tasks).map_err(|e| e.to_string())?;
+  let comments_json = serde_json::to_string(&snapshot.comments).map_err(|e| e.to_string())?;
+  let notes_json = serde_json::to_string(&snapshot.notes).map_err(|e| e.to_string())?;
+
+  let result = sqlx::query(
+    "INSERT INTO work_reports (statistics, report, startDate, endDate, workflow_id)
+    VALUES (?1, ?2, ?3, ?4, ?5)
+    ON CONFLICT(endDate) DO UPDATE SET
+      statistics = excluded.statistics,
+      report = excluded.report,
+      startDate = excluded.startDate,
+      workflow_id = excluded.workflow_id,
+      updatedAt = CURRENT_TIMESTAMP",
+  )
+  .bind(stats_json)
+  .bind(report)
+  .bind(start_date)
+  .bind(end_date)
+  .bind(workflow_id)
+  .execute(&mut *tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  sqlx::query(
+    "INSERT INTO behavior_snapshots (id, tasks, comments, notes)
+    VALUES (1, ?1, ?2, ?3)
+    ON CONFLICT(id) DO UPDATE SET
+      tasks = excluded.tasks,
+      comments = excluded.comments,
+      notes = excluded.notes,
+      updatedAt = CURRENT_TIMESTAMP",
+  )
+  .bind(tasks_json)
+  .bind(comments_json)
+  .bind(notes_json)
+  .execute(&mut *tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  tx.commit().await.map_err(|e| e.to_string())?;
+
+  let report_id = if result.last_insert_rowid() > 0 {
+    result.last_insert_rowid()
+  } else {
+    let row =
+      sqlx::query("SELECT id FROM work_reports WHERE endDate = ?1 ORDER BY id DESC LIMIT 1")
+        .bind(end_date)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    row.try_get("id").map_err(|e| e.to_string())?
+  };
+  Ok(report_id)
+}
+
+pub async fn list_work_report_history(
+  pool: &SqlitePool,
+  page: u32,
+  page_size: u32,
+) -> Result<(i64, Vec<WorkReportListItemDto>), String> {
+  let row = sqlx::query("SELECT COUNT(1) AS total FROM work_reports")
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  let total: i64 = row.try_get("total").map_err(|e| e.to_string())?;
+  let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+
+  let rows = sqlx::query(
+    "SELECT
+      wr.id, wr.startDate, wr.endDate, wr.updatedAt, w.stage
+    FROM work_reports wr
+    LEFT JOIN workflows w ON w.id = wr.workflow_id
+    ORDER BY wr.endDate DESC, wr.id DESC
+    LIMIT ?1 OFFSET ?2",
+  )
+  .bind(i64::from(page_size))
+  .bind(offset)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let mut items = Vec::with_capacity(rows.len());
+  for row in rows {
+    let stage: Option<String> = row.try_get("stage").map_err(|e| e.to_string())?;
+    items.push(WorkReportListItemDto {
+      id: row.try_get("id").map_err(|e| e.to_string())?,
+      status: stage.unwrap_or_else(|| String::from("success")),
+      start_date: row.try_get("startDate").map_err(|e| e.to_string())?,
+      end_date: row.try_get("endDate").map_err(|e| e.to_string())?,
+      updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+    });
+  }
+  Ok((total, items))
+}
+
+pub async fn get_work_report_detail_by_id(
+  pool: &SqlitePool,
+  id: i64,
+) -> Result<WorkReportDetailDto, String> {
+  let row = sqlx::query(
+    "SELECT id, statistics, report, startDate, endDate, workflow_id, createdAt, updatedAt
+    FROM work_reports
+    WHERE id = ?1",
+  )
+  .bind(id)
+  .fetch_optional(pool)
+  .await
+  .map_err(|e| e.to_string())?
+  .ok_or_else(|| String::from("work report not found"))?;
+
+  let stats_json: String = row.try_get("statistics").map_err(|e| e.to_string())?;
+  let statistics =
+    serde_json::from_str::<WorkReportDeltaStats>(&stats_json).unwrap_or(WorkReportDeltaStats {
+      new_tasks: 0,
+      completed_tasks: 0,
+      new_comments: 0,
+      updated_comments: 0,
+      new_notes: 0,
+      updated_notes: 0,
+    });
+
+  Ok(WorkReportDetailDto {
+    id: row.try_get("id").map_err(|e| e.to_string())?,
+    report: row.try_get("report").map_err(|e| e.to_string())?,
+    statistics,
+    start_date: row.try_get("startDate").map_err(|e| e.to_string())?,
+    end_date: row.try_get("endDate").map_err(|e| e.to_string())?,
+    workflow_id: row.try_get("workflow_id").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+  })
+}
+
+fn normalize_note_content_to_markdown(raw: &str) -> String {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return String::new();
+  }
+  let value = match serde_json::from_str::<Value>(trimmed) {
+    Ok(value) => value,
+    Err(_) => return trimmed.to_string(),
+  };
+  let markdown = tiptap_node_to_markdown(&value);
+  if markdown.trim().is_empty() {
+    trimmed.to_string()
+  } else {
+    markdown.trim().to_string()
+  }
+}
+
+fn tiptap_node_to_markdown(node: &Value) -> String {
+  let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
+  let attrs = node.get("attrs");
+  let children = node
+    .get("content")
+    .and_then(Value::as_array)
+    .map(|items| {
+      items
+        .iter()
+        .map(tiptap_node_to_markdown)
+        .collect::<Vec<String>>()
+    })
+    .unwrap_or_default();
+
+  match node_type {
+    "doc" => children.join("\n\n"),
+    "paragraph" => children.join(""),
+    "text" => node
+      .get("text")
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .to_string(),
+    "heading" => {
+      let level = attrs
+        .and_then(|value| value.get("level"))
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 6);
+      format!("{} {}", "#".repeat(level as usize), children.join(""))
+    }
+    "bulletList" => children
+      .iter()
+      .map(|item| prefix_markdown_lines(item, "- "))
+      .collect::<Vec<String>>()
+      .join("\n"),
+    "orderedList" => children
+      .iter()
+      .enumerate()
+      .map(|(index, item)| prefix_markdown_lines(item, &format!("{}. ", index + 1)))
+      .collect::<Vec<String>>()
+      .join("\n"),
+    "listItem" => children.join("\n"),
+    "blockquote" => prefix_markdown_lines(&children.join("\n"), "> "),
+    "codeBlock" => format!("```\n{}\n```", children.join("")),
+    "hardBreak" => String::from("\n"),
+    "horizontalRule" => String::from("---"),
+    "taskList" => children.join("\n"),
+    "taskItem" => {
+      let checked = attrs
+        .and_then(|value| value.get("checked"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+      let marker = if checked { "- [x] " } else { "- [ ] " };
+      prefix_markdown_lines(&children.join(""), marker)
+    }
+    "mathInline" | "inlineMath" => {
+      let text = node.get("text").and_then(Value::as_str).unwrap_or_else(|| {
+        node
+          .get("value")
+          .and_then(Value::as_str)
+          .unwrap_or_default()
+      });
+      format!("${text}$")
+    }
+    "mathDisplay" | "displayMath" => {
+      let text = node.get("text").and_then(Value::as_str).unwrap_or_else(|| {
+        node
+          .get("value")
+          .and_then(Value::as_str)
+          .unwrap_or_default()
+      });
+      format!("$$\n{text}\n$$")
+    }
+    _ => {
+      if children.is_empty() {
+        node
+          .get("text")
+          .and_then(Value::as_str)
+          .unwrap_or_default()
+          .to_string()
+      } else {
+        children.join("")
+      }
+    }
+  }
+}
+
+fn prefix_markdown_lines(content: &str, prefix: &str) -> String {
+  content
+    .lines()
+    .map(|line| format!("{prefix}{line}"))
+    .collect::<Vec<String>>()
+    .join("\n")
 }
 
 pub async fn get_runtime_setting_row(pool: &SqlitePool) -> Result<RuntimeSettingRow, String> {
@@ -1278,6 +1675,16 @@ pub async fn update_note_content_and_links(
         .await
         .map_err(|e| e.to_string())?;
       }
+      "work_report" => {
+        sqlx::query(
+          "INSERT INTO note_links (note_id, link_type, target_work_report_date) VALUES (?1, 'linked_work_report', ?2)",
+        )
+        .bind(id)
+        .bind(target)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+      }
       _ => {}
     }
   }
@@ -1326,6 +1733,17 @@ pub async fn get_note_linked_context_by_id(
   .fetch_all(pool)
   .await
   .map_err(|e| e.to_string())?;
+  let work_report_rows = sqlx::query(
+    "SELECT wr.id AS report_id, wr.endDate AS report_date, wr.startDate, wr.updatedAt
+    FROM note_links nl
+    INNER JOIN work_reports wr ON wr.endDate = nl.target_work_report_date
+    WHERE nl.note_id = ?1 AND nl.link_type = 'linked_work_report'
+    ORDER BY wr.endDate DESC, wr.id DESC",
+  )
+  .bind(id)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
 
   let papers = paper_rows
     .iter()
@@ -1365,11 +1783,23 @@ pub async fn get_note_linked_context_by_id(
       })
     })
     .collect::<Result<Vec<_>, _>>()?;
+  let work_reports = work_report_rows
+    .iter()
+    .map(|row| -> Result<NoteWorkReportLinkDto, String> {
+      Ok(NoteWorkReportLinkDto {
+        report_id: row.try_get("report_id").map_err(|e| e.to_string())?,
+        report_date: row.try_get("report_date").map_err(|e| e.to_string())?,
+        start_date: row.try_get("startDate").map_err(|e| e.to_string())?,
+        updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
 
   Ok(NoteLinkedContextDto {
     papers,
     tasks,
     notes,
+    work_reports,
   })
 }
 
@@ -1424,6 +1854,53 @@ pub async fn search_note_paper_options(
     .collect()
 }
 
+pub async fn search_note_work_report_options(
+  pool: &SqlitePool,
+  query: Option<&str>,
+  limit: u32,
+) -> Result<Vec<NoteWorkReportOptionDto>, String> {
+  let keyword = query
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(|value| format!("%{value}%"));
+  let rows = if let Some(keyword) = keyword {
+    sqlx::query(
+      "SELECT id AS report_id, endDate AS report_date, startDate
+      FROM work_reports
+      WHERE endDate LIKE ?1
+      ORDER BY endDate DESC
+      LIMIT ?2",
+    )
+    .bind(keyword)
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+  } else {
+    sqlx::query(
+      "SELECT id AS report_id, endDate AS report_date, startDate
+      FROM work_reports
+      ORDER BY endDate DESC
+      LIMIT ?1",
+    )
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+  };
+
+  rows
+    .iter()
+    .map(|row| -> Result<NoteWorkReportOptionDto, String> {
+      Ok(NoteWorkReportOptionDto {
+        report_id: row.try_get("report_id").map_err(|e| e.to_string())?,
+        report_date: row.try_get("report_date").map_err(|e| e.to_string())?,
+        start_date: row.try_get("startDate").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect()
+}
+
 async fn next_untitled_note_title(pool: &SqlitePool) -> Result<String, String> {
   let rows =
     sqlx::query("SELECT title FROM notes WHERE title = '未命名笔记' OR title LIKE '未命名笔记 %'")
@@ -1460,19 +1937,22 @@ async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
     "CREATE TABLE IF NOT EXISTS note_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       note_id INTEGER NOT NULL,
-      link_type TEXT NOT NULL CHECK (link_type IN ('linked_paper', 'linked_task', 'linked_note')),
+      link_type TEXT NOT NULL CHECK (link_type IN ('linked_paper', 'linked_task', 'linked_note', 'linked_work_report')),
       target_paper_id TEXT,
       target_task_id INTEGER,
       target_note_id INTEGER,
+      target_work_report_date TEXT,
       createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
       FOREIGN KEY (target_paper_id) REFERENCES papers (id) ON DELETE CASCADE,
       FOREIGN KEY (target_task_id) REFERENCES tasks (id) ON DELETE CASCADE,
       FOREIGN KEY (target_note_id) REFERENCES notes (id) ON DELETE CASCADE,
+      FOREIGN KEY (target_work_report_date) REFERENCES work_reports (endDate) ON DELETE CASCADE,
       CHECK (
         (CASE WHEN target_paper_id IS NOT NULL THEN 1 ELSE 0 END) +
         (CASE WHEN target_task_id IS NOT NULL THEN 1 ELSE 0 END) +
-        (CASE WHEN target_note_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+        (CASE WHEN target_note_id IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN target_work_report_date IS NOT NULL THEN 1 ELSE 0 END) = 1
       )
     )",
   )
@@ -1489,6 +1969,10 @@ async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
   sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_note ON note_links (note_id, link_type, target_note_id) WHERE target_note_id IS NOT NULL")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_work_report ON note_links (note_id, link_type, target_work_report_date) WHERE target_work_report_date IS NOT NULL")
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;

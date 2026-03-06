@@ -1,12 +1,13 @@
 use crate::{
   db::{
     create_note, delete_note, get_note_detail_by_id, get_note_linked_context_by_id,
-    list_note_history, search_note_paper_options, update_note_content_and_links,
+    list_note_history, search_note_paper_options, search_note_work_report_options,
+    update_note_content_and_links,
   },
   state::AppState,
   types::{
     NoteDetailDto, NoteHistoryResponse, NoteLinkRefInput, NoteLinkedContextDto, NotePaperOptionDto,
-    NoteUpsertInput,
+    NoteUpsertInput, NoteWorkReportOptionDto,
   },
 };
 use tauri::State;
@@ -79,6 +80,15 @@ pub async fn search_note_papers(
   search_note_paper_options(&state.pool, normalized_query.as_deref(), 30).await
 }
 
+#[tauri::command]
+pub async fn search_note_work_reports(
+  state: State<'_, AppState>,
+  query: Option<String>,
+) -> Result<Vec<NoteWorkReportOptionDto>, String> {
+  let normalized_query = normalize_query(query);
+  search_note_work_report_options(&state.pool, normalized_query.as_deref(), 30).await
+}
+
 fn normalize_query(query: Option<String>) -> Option<String> {
   query.and_then(|value| {
     let trimmed = value.trim();
@@ -134,8 +144,37 @@ fn normalize_links(links: Vec<NoteLinkRefInput>) -> Vec<NoteLinkRefInput> {
           }
         }
       }
+      "work_report" => {
+        if let Some(ref_id) = item.ref_id {
+          let normalized = ref_id.trim().to_string();
+          if is_valid_date(&normalized) {
+            out.push(NoteLinkRefInput {
+              ref_type: String::from("work_report"),
+              ref_id: Some(normalized),
+              label: item.label,
+            });
+          }
+        }
+      }
       _ => {}
     }
   }
   out
+}
+
+fn is_valid_date(value: &str) -> bool {
+  if value.len() != 10 {
+    return false;
+  }
+  let bytes = value.as_bytes();
+  for (index, byte) in bytes.iter().enumerate() {
+    if index == 4 || index == 7 {
+      if *byte != b'-' {
+        return false;
+      }
+    } else if !byte.is_ascii_digit() {
+      return false;
+    }
+  }
+  true
 }

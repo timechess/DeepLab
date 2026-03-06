@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type NoteRefType = "paper" | "task" | "note";
+export type NoteRefType = "paper" | "task" | "note" | "work_report";
 
 export interface NoteListItem {
   id: number;
@@ -64,10 +64,24 @@ export interface NoteRefNote {
   updatedAt: string;
 }
 
+export interface NoteWorkReportLink {
+  reportId: number;
+  reportDate: string;
+  startDate: string;
+  updatedAt: string;
+}
+
+export interface NoteWorkReportOption {
+  reportId: number;
+  reportDate: string;
+  startDate: string;
+}
+
 export interface NoteLinkedContext {
   papers: NotePaperLink[];
   tasks: NoteTaskLink[];
   notes: NoteRefNote[];
+  workReports: NoteWorkReportLink[];
 }
 
 export function getNoteHistory(
@@ -105,6 +119,14 @@ export function getNoteLinkedContext(id: number): Promise<NoteLinkedContext> {
 
 export function searchNotePapers(query: string): Promise<NotePaperOption[]> {
   return invoke<NotePaperOption[]>("search_note_papers", {
+    query: query.trim() || null,
+  });
+}
+
+export function searchNoteWorkReports(
+  query: string,
+): Promise<NoteWorkReportOption[]> {
+  return invoke<NoteWorkReportOption[]>("search_note_work_reports", {
     query: query.trim() || null,
   });
 }

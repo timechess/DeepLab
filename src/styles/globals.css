@@ -85,40 +85,40 @@ pre {
   }
 }
 
-.paper-report-markdown {
+.report-markdown {
   color: var(--color-text);
 }
 
-.paper-report-markdown h1,
-.paper-report-markdown h2,
-.paper-report-markdown h3,
-.paper-report-markdown h4,
-.paper-report-markdown h5,
-.paper-report-markdown h6 {
+.report-markdown h1,
+.report-markdown h2,
+.report-markdown h3,
+.report-markdown h4,
+.report-markdown h5,
+.report-markdown h6 {
   color: var(--color-text);
   font-family:
     var(--font-display), "Noto Serif CJK SC", "Songti SC", "STSong",
     "Source Han Serif SC", serif;
 }
 
-.paper-report-markdown p,
-.paper-report-markdown li {
+.report-markdown p,
+.report-markdown li {
   color: #dbe6ff;
   line-height: 1.85;
 }
 
-.paper-report-markdown a {
+.report-markdown a {
   color: #9fc1ff;
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: color 200ms ease;
 }
 
-.paper-report-markdown a:hover {
+.report-markdown a:hover {
   color: #cfe0ff;
 }
 
-.paper-report-markdown blockquote {
+.report-markdown blockquote {
   margin: 1.1rem 0;
   border-left: 3px solid var(--color-cta);
   padding: 0.2rem 0 0.2rem 0.9rem;
@@ -127,7 +127,7 @@ pre {
   border-radius: 0.4rem;
 }
 
-.paper-report-markdown pre {
+.report-markdown pre {
   background: #0b1422;
   border: 1px solid var(--color-border);
   border-radius: 0.8rem;
@@ -135,41 +135,41 @@ pre {
   overflow-x: auto;
 }
 
-.paper-report-markdown code {
+.report-markdown code {
   background: #142033;
   border-radius: 0.3rem;
   padding: 0.1rem 0.35rem;
   color: #cfe0ff;
 }
 
-.paper-report-markdown pre code {
+.report-markdown pre code {
   background: transparent;
   padding: 0;
 }
 
-.paper-report-markdown table {
+.report-markdown table {
   width: 100%;
   border-collapse: collapse;
   margin: 1rem 0;
 }
 
-.paper-report-markdown th,
-.paper-report-markdown td {
+.report-markdown th,
+.report-markdown td {
   border: 1px solid var(--color-border);
   padding: 0.55rem 0.65rem;
   text-align: left;
 }
 
-.paper-report-markdown th {
+.report-markdown th {
   color: #cfe0ff;
   background: rgba(20, 32, 51, 0.7);
 }
 
-.paper-report-markdown td {
+.report-markdown td {
   color: #dbe6ff;
 }
 
-.paper-report-markdown .sd-mermaid {
+.report-markdown .sd-mermaid {
   border: 1px solid var(--color-border);
   border-radius: 0.8rem;
   background: #0b1422;
@@ -177,11 +177,11 @@ pre {
 }
 
 /* Fallback: prevent duplicated visible math source when KaTeX CSS is delayed/missed. */
-.paper-report-markdown .katex {
+.report-markdown .katex {
   position: relative;
 }
 
-.paper-report-markdown .katex .katex-mathml {
+.report-markdown .katex .katex-mathml {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -329,6 +329,16 @@ pre {
 
 .note-editor .note-ref-chip[data-ref-type="note"]::before {
   content: "N";
+}
+
+.note-editor .note-ref-chip[data-ref-type="work_report"] {
+  border-color: #8a5b2a;
+  background: linear-gradient(135deg, #3b2510, #6a3f1c);
+  color: #ffe8cf;
+}
+
+.note-editor .note-ref-chip[data-ref-type="work_report"]::before {
+  content: "R";
 }
 
 .note-editor .note-ref-chip:hover {

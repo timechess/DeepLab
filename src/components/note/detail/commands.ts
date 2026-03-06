@@ -86,5 +86,12 @@ export function createSlashCommands(): SlashCommandItem[] {
       keywords: ["note", "笔记"],
       targetType: "note",
     },
+    {
+      id: "work-report",
+      label: "链接工作日报",
+      hint: "按日期搜索并插入工作日报链接",
+      keywords: ["work_report", "work", "report", "日报"],
+      targetType: "work_report",
+    },
   ];
 }

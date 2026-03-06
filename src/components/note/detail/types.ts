@@ -2,7 +2,7 @@ import type { Editor } from "@tiptap/core";
 import type { NoteLinkedContext, NoteRefType } from "@/lib/note";
 
 export type SaveState = "saved" | "dirty" | "saving" | "failed";
-export type PickerType = "paper" | "task" | "note";
+export type PickerType = "paper" | "task" | "note" | "work_report";
 
 export interface PickerOption {
   refType: NoteRefType;

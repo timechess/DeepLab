@@ -187,7 +187,7 @@ export default function PaperReportDetailPage() {
             ) : null}
           </section>
 
-          <section className="paper-report-markdown mt-6 max-w-none rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-6">
+          <section className="report-markdown mt-6 max-w-none rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-6">
             <h3 className="font-serif text-2xl text-[#e5ecff]">精读报告</h3>
             {detail.report ? (
               <Streamdown

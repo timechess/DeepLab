@@ -21,6 +21,7 @@ import {
   type NoteLinkedContext,
   type NoteRefType,
   searchNotePapers,
+  searchNoteWorkReports,
   updateNoteContent,
 } from "@/lib/note";
 import {
@@ -70,6 +71,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     papers: [],
     tasks: [],
     notes: [],
+    workReports: [],
   });
 
   const [modal, setModal] = useState<ModalState>(null);
@@ -392,17 +394,31 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
             return;
           }
 
-          const notes = await getNoteHistory(1, targetPicker.query);
+          if (targetPicker.targetType === "note") {
+            const notes = await getNoteHistory(1, targetPicker.query);
+            setTargetOptions(
+              notes.items
+                .filter((note) => note.id !== noteId)
+                .map((note) => ({
+                  refType: "note",
+                  refId: String(note.id),
+                  label: note.title,
+                  description: `ID ${note.id}`,
+                  meta: note.updatedAt,
+                })),
+            );
+            return;
+          }
+
+          const reports = await searchNoteWorkReports(targetPicker.query);
           setTargetOptions(
-            notes.items
-              .filter((note) => note.id !== noteId)
-              .map((note) => ({
-                refType: "note",
-                refId: String(note.id),
-                label: note.title,
-                description: `ID ${note.id}`,
-                meta: note.updatedAt,
-              })),
+            reports.map((report) => ({
+              refType: "work_report",
+              refId: report.reportDate,
+              label: `工作日报 ${report.reportDate}`,
+              description: `ID ${report.reportId}`,
+              meta: `${report.startDate} -> ${report.reportDate}`,
+            })),
           );
         } catch {
           setTargetOptions([]);
@@ -609,6 +625,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         </span>
         <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
           输入 <strong>/note</strong> 关联笔记
+        </span>
+        <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
+          输入 <strong>/work_report</strong> 关联工作日报
         </span>
       </div>
 

@@ -9,6 +9,7 @@ export type SlashAction =
   | "paper"
   | "task"
   | "note"
+  | "work_report"
   | "table"
   | "code"
   | "inline_math"
@@ -80,6 +81,11 @@ export const SlashCommand = Extension.create<{
       { title: "paper", description: "插入论文链接", action: "paper" },
       { title: "task", description: "插入任务链接", action: "task" },
       { title: "note", description: "插入笔记链接", action: "note" },
+      {
+        title: "work_report",
+        description: "插入工作日报链接",
+        action: "work_report",
+      },
       { title: "table", description: "插入表格", action: "table" },
       { title: "code", description: "插入代码块", action: "code" },
       {
