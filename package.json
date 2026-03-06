@@ -16,12 +16,18 @@
     "build": "tauri build"
   },
   "dependencies": {
+    "@streamdown/cjk": "^1.0.2",
+    "@streamdown/code": "^1.0.3",
+    "@streamdown/math": "^1.0.2",
+    "@streamdown/mermaid": "^1.0.2",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-sql": "^2.3.2",
+    "katex": "^0.16.35",
     "next": "^16.1.6",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "streamdown": "^2.3.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",

@@ -50,6 +50,62 @@ pub struct WorkflowHistoryResponse {
   pub items: Vec<WorkflowListItem>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperReadingTriggerInput {
+  pub paper_id_or_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartPaperReadingResponse {
+  pub workflow_id: i64,
+  pub paper_id: String,
+  pub reused: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperReportListItemDto {
+  pub paper_id: String,
+  pub title: String,
+  pub status: String,
+  pub updated_at: String,
+  pub has_comment: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperReportListResponse {
+  pub page: u32,
+  pub page_size: u32,
+  pub total: i64,
+  pub items: Vec<PaperReportListItemDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperReportDetailDto {
+  pub paper_id: String,
+  pub title: String,
+  pub authors: Vec<String>,
+  pub organization: Option<String>,
+  pub summary: String,
+  pub arxiv_url: String,
+  pub github_repo: Option<String>,
+  pub report: Option<String>,
+  pub comment: Option<String>,
+  pub status: String,
+  pub error: Option<String>,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperReportCommentInput {
+  pub comment: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleDto {
@@ -151,6 +207,26 @@ pub struct RuntimeSettingRow {
 #[derive(Debug, Deserialize)]
 pub struct HfDailyItem {
   pub paper: HfPaper,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HfPaperApiResponse {
+  pub id: String,
+  pub title: Option<String>,
+  pub summary: Option<String>,
+  #[serde(default)]
+  pub authors: Vec<HfAuthor>,
+  pub organization: Option<HfOrganization>,
+  pub ai_summary: Option<String>,
+  #[serde(default)]
+  pub ai_keywords: Vec<String>,
+  pub upvotes: Option<i64>,
+  #[serde(rename = "githubRepo")]
+  pub github_repo: Option<String>,
+  #[serde(rename = "githubStars")]
+  pub github_stars: Option<i64>,
+  #[serde(rename = "publishedAt")]
+  pub published_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

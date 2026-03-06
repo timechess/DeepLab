@@ -268,27 +268,32 @@ export default function SettingPage() {
 
           <section className="rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-6">
             <h2 className="font-serif text-3xl font-semibold text-[#e5ecff]">
-              提示词模板
+              默认提示词模板
             </h2>
             <div className="mt-3 rounded-2xl border border-[#2d3a52] bg-[#142033] p-4">
               <p className="text-xs font-semibold tracking-wide text-[#9fc1ff]">
-                变量提示（仅在论文初筛模板生效）
+                默认模板说明
               </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
-                  {"{{CANDIDATES_PAPER}}"}
-                </code>
-                <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
-                  {"{{RULE_LIST}}"}
-                </code>
-              </div>
               <p className="mt-2 text-xs text-[#9fc1ff]/90">
-                保留变量名不变。系统会在运行时注入候选论文文本和规则列表。
+                这里展示并编辑的是各工作流默认提示词模板。若你覆盖模板，请保留变量名不变，系统会在运行时注入对应内容。
               </p>
             </div>
             <div className="mt-4 space-y-4">
               <label className="block text-sm text-[#c7d5ef]">
                 Paper Filter Prompt
+                <div className="mt-2 rounded-xl border border-[#2d3a52] bg-[#142033] p-3">
+                  <p className="text-xs font-semibold tracking-wide text-[#9fc1ff]">
+                    可用变量
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{CANDIDATES_PAPER}}"}
+                    </code>
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{RULE_LIST}}"}
+                    </code>
+                  </div>
+                </div>
                 <textarea
                   rows={10}
                   className="mt-1 w-full rounded-xl border border-[#1f2a3d] px-3 py-2"
@@ -300,6 +305,22 @@ export default function SettingPage() {
               </label>
               <label className="block text-sm text-[#c7d5ef]">
                 Paper Reading Prompt
+                <div className="mt-2 rounded-xl border border-[#2d3a52] bg-[#142033] p-3">
+                  <p className="text-xs font-semibold tracking-wide text-[#9fc1ff]">
+                    可用变量
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{PAPER_ID}}"}
+                    </code>
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{PAPER_TITLE}}"}
+                    </code>
+                    <code className="rounded-full bg-[#0f1724] px-3 py-1 text-xs text-[#9fc1ff]">
+                      {"{{PAPER_OCR_TEXT}}"}
+                    </code>
+                  </div>
+                </div>
                 <textarea
                   rows={6}
                   className="mt-1 w-full rounded-xl border border-[#1f2a3d] px-3 py-2"
@@ -311,6 +332,14 @@ export default function SettingPage() {
               </label>
               <label className="block text-sm text-[#c7d5ef]">
                 Work Report Prompt
+                <div className="mt-2 rounded-xl border border-[#2d3a52] bg-[#142033] p-3">
+                  <p className="text-xs font-semibold tracking-wide text-[#9fc1ff]">
+                    变量说明
+                  </p>
+                  <p className="mt-2 text-xs text-[#9fc1ff]/90">
+                    当前该模板未约定固定变量，建议保持结构化输出要求。
+                  </p>
+                </div>
                 <textarea
                   rows={6}
                   className="mt-1 w-full rounded-xl border border-[#1f2a3d] px-3 py-2"
@@ -322,7 +351,6 @@ export default function SettingPage() {
               </label>
             </div>
           </section>
-
         </form>
       ) : null}
     </main>

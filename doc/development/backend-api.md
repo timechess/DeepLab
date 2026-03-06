@@ -17,6 +17,25 @@
   - 返回: `{ page, pageSize, total, items[] }`
   - 固定分页: `pageSize = 10`
 
+## Paper Reading Commands
+
+- `start_paper_reading_workflow({ paperIdOrUrl })`
+  - 返回: `{ workflowId, paperId, reused }`
+  - 复用策略:
+    - 若该 `paperId` 已存在 `ready` 报告，则直接复用，不重复生成
+    - 若该 `paperId` 已有 `running` 精读工作流，则复用该工作流
+
+- `get_paper_report_history(page?)`
+  - 返回: `{ page, pageSize, total, items[] }`
+  - 固定分页: `pageSize = 10`
+
+- `get_paper_report_detail(paperId)`
+  - 返回: `{ paperId, title, authors, organization, summary, arxivUrl, githubRepo, report, comment, status, error, updatedAt }`
+
+- `update_paper_report_comment(paperId, { comment })`
+  - 返回: `void`
+  - 支持空字符串（清空评论）
+
 ## Runtime Settings Commands
 
 - `get_runtime_setting()`
@@ -42,5 +61,17 @@
 - `newPaperIds`
 - `selectedIds`
 - `llmResult`
+- `retries`
+- `error`（失败时）
+
+## Paper Reading Payload 关键字段
+
+- `paperId`
+- `triggeredAt`
+- `startedAt`
+- `finishedAt`
+- `source`
+- `pdfUrl`
+- `ocrChars`
 - `retries`
 - `error`（失败时）

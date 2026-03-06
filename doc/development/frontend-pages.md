@@ -28,6 +28,30 @@
 - 提示词区展示变量说明：
   - `{{CANDIDATES_PAPER}}`
   - `{{RULE_LIST}}`
+  - `{{PAPER_ID}}`
+  - `{{PAPER_TITLE}}`
+  - `{{PAPER_OCR_TEXT}}`
+
+## `/paper_report`
+
+- 顶部输入 arXiv id/URL + `开始精读`
+- 触发后显示运行状态（`running|ready|failed`）
+- 报告历史分页表格（每页 10 条）
+- 详情跳转使用静态路由 + query：
+  - `/paper_report/detail?paperId=...`
+
+## `/paper_report/detail`
+
+- 客户端通过 query `paperId` 调 Tauri command 拉取详情
+- 报告渲染使用 `streamdown` + 插件：
+  - `@streamdown/cjk`
+  - `@streamdown/code`
+  - `@streamdown/math`
+  - `@streamdown/mermaid`
+- 数学兼容：
+  - 保留 `$...$`、`$$...$$`
+  - 将 `\(...\)`、`\[...\]` 归一化后再渲染
+- 底部评论支持新增/覆盖/清空保存
 
 ## 导航
 
@@ -36,4 +60,5 @@
 - 今日推荐
 - 工作流管理
 - 筛选规则
+- 论文精读
 - 系统设置
