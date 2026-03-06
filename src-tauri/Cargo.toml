@@ -1,0 +1,68 @@
+[package]
+name = "deeplab"
+version = "1.0.0"
+description = "AI科研辅助平台"
+authors = ["timechess"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "deeplab_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "json", "chrono"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+similar = "2.7"
+
+[dependencies.tauri-plugin-sql]
+features = ["sqlite"]
+version = "2.0.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Deny all warnings - treat them as errors
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# Unimplemented items can be left as warnings
+todo = "warn"
+unimplemented = "warn"
+
+# Correctness (deny)
+cast_lossless = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "deny"
+cast_sign_loss = "deny"
+
+# Performance (warn/deny)
+inefficient_to_string = "deny"
+large_enum_variant = "warn"
+large_stack_arrays = "warn"
+needless_pass_by_value = "warn"
+
+# Style (warn)
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"

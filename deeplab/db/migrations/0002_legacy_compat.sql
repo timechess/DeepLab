@@ -1,7 +1,0 @@
--- Legacy compatibility migration placeholder.
---
--- Historical PostgreSQL column-name variants for knowledge_notes and
--- knowledge_note_links are handled during one-off data import from
--- scripts/migrate_postgres_to_duckdb.py.
---
--- Keep this migration file to reserve the compatibility version.
