@@ -133,7 +133,7 @@ export default function RulePage() {
             type="button"
             disabled={saving}
             onClick={handleCreate}
-            className="cursor-pointer rounded-2xl bg-[#4f7dff] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="min-w-[104px] cursor-pointer whitespace-nowrap rounded-2xl bg-[#4f7dff] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             新增规则
           </button>

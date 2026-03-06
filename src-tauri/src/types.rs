@@ -121,6 +121,37 @@ pub struct RuleInput {
   pub content: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDto {
+  pub id: i64,
+  pub title: String,
+  pub description: Option<String>,
+  pub priority: String,
+  pub completed_date: Option<String>,
+  pub created_at: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskInput {
+  pub title: String,
+  pub description: Option<String>,
+  pub priority: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListResponse {
+  pub page: u32,
+  pub page_size: u32,
+  pub total: i64,
+  pub pending_total: i64,
+  pub completed_total: i64,
+  pub items: Vec<TaskDto>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PaperDecision {
   pub id: String,

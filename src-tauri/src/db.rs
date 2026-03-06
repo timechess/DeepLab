@@ -6,7 +6,7 @@ use crate::{
   types::{
     PaperCardDto, PaperDecision, PaperRecommendationResult, PaperReportDetailDto,
     PaperReportListItemDto, PersistPaper, RuleDto, RuntimeSettingDto, RuntimeSettingRow,
-    RuntimeSettingUpsertInput, WorkflowListItem,
+    RuntimeSettingUpsertInput, TaskDto, WorkflowListItem,
   },
 };
 use serde_json::{json, Value};
@@ -867,6 +867,163 @@ pub async fn write_llm_log(
   .await
   .map_err(|e| e.to_string())?;
   Ok(())
+}
+
+pub async fn list_task_history(
+  pool: &SqlitePool,
+  page: u32,
+  page_size: u32,
+) -> Result<(i64, i64, i64, Vec<TaskDto>), String> {
+  let row = sqlx::query(
+    "SELECT
+      COUNT(1) AS total,
+      COALESCE(SUM(CASE WHEN completedDate IS NULL THEN 1 ELSE 0 END), 0) AS pending_total,
+      COALESCE(SUM(CASE WHEN completedDate IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_total
+    FROM tasks",
+  )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  let total: i64 = row.try_get("total").map_err(|e| e.to_string())?;
+  let pending_total: i64 = row.try_get("pending_total").map_err(|e| e.to_string())?;
+  let completed_total: i64 = row.try_get("completed_total").map_err(|e| e.to_string())?;
+  let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+
+  let rows = sqlx::query(
+    "SELECT id, title, description, priority, completedDate, createdAt, updatedAt
+    FROM tasks
+    ORDER BY
+      CASE WHEN completedDate IS NULL THEN 0 ELSE 1 END ASC,
+      updatedAt DESC,
+      id DESC
+    LIMIT ?1 OFFSET ?2",
+  )
+  .bind(i64::from(page_size))
+  .bind(offset)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let mut items = Vec::with_capacity(rows.len());
+  for row in rows {
+    items.push(TaskDto {
+      id: row.try_get("id").map_err(|e| e.to_string())?,
+      title: row.try_get("title").map_err(|e| e.to_string())?,
+      description: row.try_get("description").map_err(|e| e.to_string())?,
+      priority: normalize_task_priority(row.try_get("priority").map_err(|e| e.to_string())?),
+      completed_date: row.try_get("completedDate").map_err(|e| e.to_string())?,
+      created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+      updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+    });
+  }
+  Ok((total, pending_total, completed_total, items))
+}
+
+pub async fn create_task(
+  pool: &SqlitePool,
+  title: &str,
+  description: Option<&str>,
+  priority: &str,
+) -> Result<TaskDto, String> {
+  let result = sqlx::query("INSERT INTO tasks (title, description, priority) VALUES (?1, ?2, ?3)")
+    .bind(title)
+    .bind(description)
+    .bind(priority)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  let id = result.last_insert_rowid();
+  get_task_by_id(pool, id).await
+}
+
+pub async fn update_task(
+  pool: &SqlitePool,
+  id: i64,
+  title: &str,
+  description: Option<&str>,
+  priority: &str,
+) -> Result<TaskDto, String> {
+  let result = sqlx::query(
+    "UPDATE tasks
+    SET title = ?1, description = ?2, priority = ?3, updatedAt = CURRENT_TIMESTAMP
+    WHERE id = ?4",
+  )
+  .bind(title)
+  .bind(description)
+  .bind(priority)
+  .bind(id)
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  if result.rows_affected() == 0 {
+    return Err(String::from("task not found"));
+  }
+  get_task_by_id(pool, id).await
+}
+
+pub async fn toggle_task_completed(
+  pool: &SqlitePool,
+  id: i64,
+  completed: bool,
+) -> Result<TaskDto, String> {
+  let result = sqlx::query(
+    "UPDATE tasks
+    SET
+      completedDate = CASE WHEN ?1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+      updatedAt = CURRENT_TIMESTAMP
+    WHERE id = ?2",
+  )
+  .bind(completed)
+  .bind(id)
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  if result.rows_affected() == 0 {
+    return Err(String::from("task not found"));
+  }
+  get_task_by_id(pool, id).await
+}
+
+pub async fn delete_task(pool: &SqlitePool, id: i64) -> Result<(), String> {
+  sqlx::query("DELETE FROM tasks WHERE id = ?1")
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+async fn get_task_by_id(pool: &SqlitePool, id: i64) -> Result<TaskDto, String> {
+  let row = sqlx::query(
+    "SELECT id, title, description, priority, completedDate, createdAt, updatedAt
+    FROM tasks
+    WHERE id = ?1",
+  )
+  .bind(id)
+  .fetch_optional(pool)
+  .await
+  .map_err(|e| e.to_string())?
+  .ok_or_else(|| String::from("task not found"))?;
+
+  Ok(TaskDto {
+    id: row.try_get("id").map_err(|e| e.to_string())?,
+    title: row.try_get("title").map_err(|e| e.to_string())?,
+    description: row.try_get("description").map_err(|e| e.to_string())?,
+    priority: normalize_task_priority(row.try_get("priority").map_err(|e| e.to_string())?),
+    completed_date: row.try_get("completedDate").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+  })
+}
+
+fn normalize_task_priority(value: String) -> String {
+  let normalized = value.trim().to_ascii_lowercase();
+  match normalized.as_str() {
+    "low" => String::from("low"),
+    "medium" | "meidum" => String::from("medium"),
+    "high" => String::from("high"),
+    _ => String::from("medium"),
+  }
 }
 
 pub async fn list_rules(pool: &SqlitePool) -> Result<Vec<RuleDto>, String> {
