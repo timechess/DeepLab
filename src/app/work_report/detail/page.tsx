@@ -5,7 +5,7 @@ import { createCodePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
 import { createMermaidPlugin } from "@streamdown/mermaid";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 import { getWorkReportDetail, type WorkReportDetail } from "@/lib/workReport";
 
@@ -15,7 +15,7 @@ function normalizeMathDelimiters(markdown: string): string {
     .replace(/\\\((.*?)\\\)/gs, (_, expr: string) => `$${expr}$`);
 }
 
-export default function WorkReportDetailPage() {
+function WorkReportDetailPageContent() {
   const searchParams = useSearchParams();
   const reportId = useMemo(() => {
     const raw = searchParams.get("reportId");
@@ -130,5 +130,13 @@ export default function WorkReportDetailPage() {
         </>
       ) : null}
     </main>
+  );
+}
+
+export default function WorkReportDetailPage() {
+  return (
+    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+      <WorkReportDetailPageContent />
+    </Suspense>
   );
 }

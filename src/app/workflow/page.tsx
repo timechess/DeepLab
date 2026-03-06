@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { WorkflowStatusPanel } from "@/components/WorkflowStatusPanel";
 import {
   getWorkflowHistory,
@@ -10,7 +10,7 @@ import {
   type WorkflowStatusResponse,
 } from "@/lib/workflow";
 
-export default function WorkflowPage() {
+function WorkflowPageContent() {
   const searchParams = useSearchParams();
   const queryWorkflowId = useMemo(() => {
     const raw = searchParams.get("workflowId");
@@ -185,5 +185,13 @@ export default function WorkflowPage() {
         />
       </div>
     </main>
+  );
+}
+
+export default function WorkflowPage() {
+  return (
+    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+      <WorkflowPageContent />
+    </Suspense>
   );
 }

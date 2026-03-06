@@ -6,7 +6,7 @@ import { createMathPlugin } from "@streamdown/math";
 import { createMermaidPlugin } from "@streamdown/mermaid";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
   getPaperReportDetail,
@@ -20,7 +20,7 @@ function normalizeMathDelimiters(markdown: string): string {
     .replace(/\\\((.*?)\\\)/gs, (_, expr: string) => `$${expr}$`);
 }
 
-export default function PaperReportDetailPage() {
+function PaperReportDetailPageContent() {
   const searchParams = useSearchParams();
   const paperId = useMemo(
     () => decodeURIComponent(searchParams.get("paperId") ?? ""),
@@ -230,5 +230,13 @@ export default function PaperReportDetailPage() {
         </>
       ) : null}
     </main>
+  );
+}
+
+export default function PaperReportDetailPage() {
+  return (
+    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+      <PaperReportDetailPageContent />
+    </Suspense>
   );
 }

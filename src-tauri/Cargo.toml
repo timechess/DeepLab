@@ -1,6 +1,6 @@
 [package]
 name = "deeplab"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI科研辅助平台"
 authors = ["timechess"]
 edition = "2021"
