@@ -152,6 +152,95 @@ pub struct TaskListResponse {
   pub items: Vec<TaskDto>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteListItemDto {
+  pub id: i64,
+  pub title: String,
+  pub created_at: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteHistoryResponse {
+  pub page: u32,
+  pub page_size: u32,
+  pub total: i64,
+  pub items: Vec<NoteListItemDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDetailDto {
+  pub id: i64,
+  pub title: String,
+  pub content: String,
+  pub created_at: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePaperLinkDto {
+  pub paper_id: String,
+  pub title: String,
+  pub arxiv_url: String,
+  pub has_report: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTaskLinkDto {
+  pub task_id: i64,
+  pub title: String,
+  pub description: Option<String>,
+  pub priority: String,
+  pub completed_date: Option<String>,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteRefNoteDto {
+  pub note_id: i64,
+  pub title: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteLinkedContextDto {
+  pub papers: Vec<NotePaperLinkDto>,
+  pub tasks: Vec<NoteTaskLinkDto>,
+  pub notes: Vec<NoteRefNoteDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePaperOptionDto {
+  pub paper_id: String,
+  pub title: String,
+  pub has_report: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteLinkRefInput {
+  pub ref_type: String,
+  pub ref_id: Option<String>,
+  pub label: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteUpsertInput {
+  pub title: String,
+  pub content: String,
+  #[serde(default)]
+  pub links: Vec<NoteLinkRefInput>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PaperDecision {
   pub id: String,

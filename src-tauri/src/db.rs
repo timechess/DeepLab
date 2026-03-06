@@ -4,9 +4,10 @@ use crate::{
     DEFAULT_PAPER_FILTER_PROMPT, DEFAULT_PAPER_READING_PROMPT, DEFAULT_WORK_REPORT_PROMPT,
   },
   types::{
-    PaperCardDto, PaperDecision, PaperRecommendationResult, PaperReportDetailDto,
-    PaperReportListItemDto, PersistPaper, RuleDto, RuntimeSettingDto, RuntimeSettingRow,
-    RuntimeSettingUpsertInput, TaskDto, WorkflowListItem,
+    NoteDetailDto, NoteLinkRefInput, NoteLinkedContextDto, NoteListItemDto, NotePaperLinkDto,
+    NotePaperOptionDto, NoteRefNoteDto, NoteTaskLinkDto, PaperCardDto, PaperDecision,
+    PaperRecommendationResult, PaperReportDetailDto, PaperReportListItemDto, PersistPaper, RuleDto,
+    RuntimeSettingDto, RuntimeSettingRow, RuntimeSettingUpsertInput, TaskDto, WorkflowListItem,
   },
 };
 use serde_json::{json, Value};
@@ -556,7 +557,9 @@ pub async fn list_paper_report_history(
       title: row.try_get("title").map_err(|e| e.to_string())?,
       status: row.try_get("status").map_err(|e| e.to_string())?,
       updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
-      has_comment: comment.as_deref().is_some_and(|value| !value.trim().is_empty()),
+      has_comment: comment
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty()),
     });
   }
   Ok((total, items))
@@ -605,13 +608,14 @@ pub async fn update_paper_report_comment_by_paper_id(
   paper_id: &str,
   comment: &str,
 ) -> Result<(), String> {
-  let result =
-    sqlx::query("UPDATE paper_reports SET comment = ?1, updatedAt = CURRENT_TIMESTAMP WHERE paper_id = ?2")
-      .bind(comment)
-      .bind(paper_id)
-      .execute(pool)
-      .await
-      .map_err(|e| e.to_string())?;
+  let result = sqlx::query(
+    "UPDATE paper_reports SET comment = ?1, updatedAt = CURRENT_TIMESTAMP WHERE paper_id = ?2",
+  )
+  .bind(comment)
+  .bind(paper_id)
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
   if result.rows_affected() == 0 {
     return Err(String::from("paper report not found"));
   }
@@ -775,13 +779,7 @@ pub fn to_runtime_setting_dto(row: Option<RuntimeSettingRow>) -> RuntimeSettingD
   } else {
     row.work_report_prompt.clone().unwrap_or_default()
   };
-  let ocr_base_url = if row
-    .ocr_base_url
-    .as_deref()
-    .unwrap_or("")
-    .trim()
-    .is_empty()
-  {
+  let ocr_base_url = if row.ocr_base_url.as_deref().unwrap_or("").trim().is_empty() {
     if !defaults_applied.iter().any(|item| item == "ocr_base_url") {
       defaults_applied.push(String::from("ocr_base_url"));
     }
@@ -789,13 +787,7 @@ pub fn to_runtime_setting_dto(row: Option<RuntimeSettingRow>) -> RuntimeSettingD
   } else {
     row.ocr_base_url.clone().unwrap_or_default()
   };
-  let ocr_model = if row
-    .ocr_model
-    .as_deref()
-    .unwrap_or("")
-    .trim()
-    .is_empty()
-  {
+  let ocr_model = if row.ocr_model.as_deref().unwrap_or("").trim().is_empty() {
     if !defaults_applied.iter().any(|item| item == "ocr_model") {
       defaults_applied.push(String::from("ocr_model"));
     }
@@ -881,9 +873,9 @@ pub async fn list_task_history(
       COALESCE(SUM(CASE WHEN completedDate IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_total
     FROM tasks",
   )
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+  .fetch_one(pool)
+  .await
+  .map_err(|e| e.to_string())?;
   let total: i64 = row.try_get("total").map_err(|e| e.to_string())?;
   let pending_total: i64 = row.try_get("pending_total").map_err(|e| e.to_string())?;
   let completed_total: i64 = row.try_get("completed_total").map_err(|e| e.to_string())?;
@@ -1090,4 +1082,419 @@ async fn get_rule_by_id(pool: &SqlitePool, id: i64) -> Result<RuleDto, String> {
     created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
     updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
   })
+}
+
+pub async fn list_note_history(
+  pool: &SqlitePool,
+  page: u32,
+  page_size: u32,
+  query: Option<&str>,
+) -> Result<(i64, Vec<NoteListItemDto>), String> {
+  let keyword = query.map(|value| format!("%{}%", value.trim()));
+  let (count_sql, list_sql) = if keyword.is_some() {
+    (
+      "SELECT COUNT(1) AS total FROM notes WHERE title LIKE ?1",
+      "SELECT id, title, createdAt, updatedAt
+      FROM notes
+      WHERE title LIKE ?1
+      ORDER BY updatedAt DESC, id DESC
+      LIMIT ?2 OFFSET ?3",
+    )
+  } else {
+    (
+      "SELECT COUNT(1) AS total FROM notes",
+      "SELECT id, title, createdAt, updatedAt
+      FROM notes
+      ORDER BY updatedAt DESC, id DESC
+      LIMIT ?1 OFFSET ?2",
+    )
+  };
+
+  let total_row = if let Some(keyword) = &keyword {
+    sqlx::query(count_sql)
+      .bind(keyword)
+      .fetch_one(pool)
+      .await
+      .map_err(|e| e.to_string())?
+  } else {
+    sqlx::query(count_sql)
+      .fetch_one(pool)
+      .await
+      .map_err(|e| e.to_string())?
+  };
+  let total: i64 = total_row.try_get("total").map_err(|e| e.to_string())?;
+  let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+
+  let rows = if let Some(keyword) = &keyword {
+    sqlx::query(list_sql)
+      .bind(keyword)
+      .bind(i64::from(page_size))
+      .bind(offset)
+      .fetch_all(pool)
+      .await
+      .map_err(|e| e.to_string())?
+  } else {
+    sqlx::query(list_sql)
+      .bind(i64::from(page_size))
+      .bind(offset)
+      .fetch_all(pool)
+      .await
+      .map_err(|e| e.to_string())?
+  };
+
+  let mut items = Vec::with_capacity(rows.len());
+  for row in rows {
+    items.push(NoteListItemDto {
+      id: row.try_get("id").map_err(|e| e.to_string())?,
+      title: row.try_get("title").map_err(|e| e.to_string())?,
+      created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+      updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+    });
+  }
+  Ok((total, items))
+}
+
+pub async fn create_note(pool: &SqlitePool) -> Result<NoteDetailDto, String> {
+  let title = next_untitled_note_title(pool).await?;
+  let initial_content = String::from(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#);
+  let result = sqlx::query("INSERT INTO notes (title, content) VALUES (?1, ?2)")
+    .bind(&title)
+    .bind(initial_content)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  let id = result.last_insert_rowid();
+  get_note_detail_by_id(pool, id).await
+}
+
+pub async fn delete_note(pool: &SqlitePool, id: i64) -> Result<(), String> {
+  sqlx::query("DELETE FROM notes WHERE id = ?1")
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+pub async fn get_note_detail_by_id(pool: &SqlitePool, id: i64) -> Result<NoteDetailDto, String> {
+  let row = sqlx::query("SELECT id, title, content, createdAt, updatedAt FROM notes WHERE id = ?1")
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| String::from("note not found"))?;
+
+  Ok(NoteDetailDto {
+    id: row.try_get("id").map_err(|e| e.to_string())?,
+    title: row.try_get("title").map_err(|e| e.to_string())?,
+    content: row.try_get("content").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+  })
+}
+
+pub async fn update_note_content_and_links(
+  pool: &SqlitePool,
+  id: i64,
+  title: &str,
+  content: &str,
+  links: &[NoteLinkRefInput],
+) -> Result<NoteDetailDto, String> {
+  ensure_note_links_schema(pool).await?;
+  let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+  let result = sqlx::query(
+    "UPDATE notes
+    SET title = ?1, content = ?2, updatedAt = CURRENT_TIMESTAMP
+    WHERE id = ?3",
+  )
+  .bind(title)
+  .bind(content)
+  .bind(id)
+  .execute(&mut *tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  if result.rows_affected() == 0 {
+    return Err(String::from("note not found"));
+  }
+
+  sqlx::query("DELETE FROM note_links WHERE note_id = ?1")
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+  let mut seen: HashSet<(String, String)> = HashSet::new();
+  for link in links {
+    let Some(raw_target) = link.ref_id.as_deref() else {
+      continue;
+    };
+    let target = raw_target.trim();
+    if target.is_empty() {
+      continue;
+    }
+    let key = (link.ref_type.clone(), target.to_string());
+    if seen.contains(&key) {
+      continue;
+    }
+    seen.insert(key);
+
+    match link.ref_type.as_str() {
+      "paper" => {
+        sqlx::query(
+          "INSERT INTO note_links (note_id, link_type, target_paper_id) VALUES (?1, 'linked_paper', ?2)",
+        )
+        .bind(id)
+        .bind(target)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+      }
+      "task" => {
+        let target_task_id: i64 = target
+          .parse()
+          .map_err(|_| String::from("invalid task link target"))?;
+        sqlx::query(
+          "INSERT INTO note_links (note_id, link_type, target_task_id) VALUES (?1, 'linked_task', ?2)",
+        )
+        .bind(id)
+        .bind(target_task_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+      }
+      "note" => {
+        let target_note_id: i64 = target
+          .parse()
+          .map_err(|_| String::from("invalid note link target"))?;
+        if target_note_id == id {
+          continue;
+        }
+        sqlx::query(
+          "INSERT INTO note_links (note_id, link_type, target_note_id) VALUES (?1, 'linked_note', ?2)",
+        )
+        .bind(id)
+        .bind(target_note_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+      }
+      _ => {}
+    }
+  }
+
+  tx.commit().await.map_err(|e| e.to_string())?;
+  get_note_detail_by_id(pool, id).await
+}
+
+pub async fn get_note_linked_context_by_id(
+  pool: &SqlitePool,
+  id: i64,
+) -> Result<NoteLinkedContextDto, String> {
+  ensure_note_links_schema(pool).await?;
+  let paper_rows = sqlx::query(
+    "SELECT p.id AS paper_id, p.title, EXISTS (SELECT 1 FROM paper_reports pr WHERE pr.paper_id = p.id) AS has_report
+    FROM note_links nl
+    INNER JOIN papers p ON p.id = nl.target_paper_id
+    WHERE nl.note_id = ?1 AND nl.link_type = 'linked_paper'
+    ORDER BY p.id DESC",
+  )
+  .bind(id)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let task_rows = sqlx::query(
+    "SELECT t.id AS task_id, t.title, t.description, t.priority, t.completedDate, t.updatedAt
+    FROM note_links nl
+    INNER JOIN tasks t ON t.id = nl.target_task_id
+    WHERE nl.note_id = ?1 AND nl.link_type = 'linked_task'
+    ORDER BY t.updatedAt DESC, t.id DESC",
+  )
+  .bind(id)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let note_rows = sqlx::query(
+    "SELECT n.id AS note_id, n.title, n.updatedAt
+    FROM note_links nl
+    INNER JOIN notes n ON n.id = nl.target_note_id
+    WHERE nl.note_id = ?1 AND nl.link_type = 'linked_note'
+    ORDER BY n.updatedAt DESC, n.id DESC",
+  )
+  .bind(id)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let papers = paper_rows
+    .iter()
+    .map(|row| -> Result<NotePaperLinkDto, String> {
+      let paper_id: String = row.try_get("paper_id").map_err(|e| e.to_string())?;
+      Ok(NotePaperLinkDto {
+        arxiv_url: format!("https://arxiv.org/abs/{paper_id}"),
+        paper_id,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        has_report: row
+          .try_get::<i64, _>("has_report")
+          .map_err(|e| e.to_string())?
+          > 0,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+  let tasks = task_rows
+    .iter()
+    .map(|row| -> Result<NoteTaskLinkDto, String> {
+      Ok(NoteTaskLinkDto {
+        task_id: row.try_get("task_id").map_err(|e| e.to_string())?,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        description: row.try_get("description").map_err(|e| e.to_string())?,
+        priority: normalize_task_priority(row.try_get("priority").map_err(|e| e.to_string())?),
+        completed_date: row.try_get("completedDate").map_err(|e| e.to_string())?,
+        updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+  let notes = note_rows
+    .iter()
+    .map(|row| -> Result<NoteRefNoteDto, String> {
+      Ok(NoteRefNoteDto {
+        note_id: row.try_get("note_id").map_err(|e| e.to_string())?,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  Ok(NoteLinkedContextDto {
+    papers,
+    tasks,
+    notes,
+  })
+}
+
+pub async fn search_note_paper_options(
+  pool: &SqlitePool,
+  query: Option<&str>,
+  limit: u32,
+) -> Result<Vec<NotePaperOptionDto>, String> {
+  let keyword = query
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(|value| format!("%{value}%"));
+  let rows = if let Some(keyword) = keyword {
+    sqlx::query(
+      "SELECT p.id AS paper_id, p.title,
+      EXISTS (SELECT 1 FROM paper_reports pr WHERE pr.paper_id = p.id) AS has_report
+      FROM papers p
+      WHERE p.id LIKE ?1 OR p.title LIKE ?1
+      ORDER BY p.updatedAt DESC, p.id DESC
+      LIMIT ?2",
+    )
+    .bind(keyword)
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+  } else {
+    sqlx::query(
+      "SELECT p.id AS paper_id, p.title,
+      EXISTS (SELECT 1 FROM paper_reports pr WHERE pr.paper_id = p.id) AS has_report
+      FROM papers p
+      ORDER BY p.updatedAt DESC, p.id DESC
+      LIMIT ?1",
+    )
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+  };
+  rows
+    .iter()
+    .map(|row| -> Result<NotePaperOptionDto, String> {
+      Ok(NotePaperOptionDto {
+        paper_id: row.try_get("paper_id").map_err(|e| e.to_string())?,
+        title: row.try_get("title").map_err(|e| e.to_string())?,
+        has_report: row
+          .try_get::<i64, _>("has_report")
+          .map_err(|e| e.to_string())?
+          > 0,
+      })
+    })
+    .collect()
+}
+
+async fn next_untitled_note_title(pool: &SqlitePool) -> Result<String, String> {
+  let rows =
+    sqlx::query("SELECT title FROM notes WHERE title = '未命名笔记' OR title LIKE '未命名笔记 %'")
+      .fetch_all(pool)
+      .await
+      .map_err(|e| e.to_string())?;
+  let mut used = HashSet::new();
+  for row in rows {
+    let title: String = row.try_get("title").map_err(|e| e.to_string())?;
+    if title == "未命名笔记" {
+      used.insert(1_i64);
+      continue;
+    }
+    if let Some(suffix) = title.strip_prefix("未命名笔记 ") {
+      if let Ok(index) = suffix.trim().parse::<i64>() {
+        if index >= 2 {
+          used.insert(index);
+        }
+      }
+    }
+  }
+  if !used.contains(&1) {
+    return Ok(String::from("未命名笔记"));
+  }
+  let mut current = 2_i64;
+  while used.contains(&current) {
+    current += 1;
+  }
+  Ok(format!("未命名笔记 {current}"))
+}
+
+async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
+  sqlx::query(
+    "CREATE TABLE IF NOT EXISTS note_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_id INTEGER NOT NULL,
+      link_type TEXT NOT NULL CHECK (link_type IN ('linked_paper', 'linked_task', 'linked_note')),
+      target_paper_id TEXT,
+      target_task_id INTEGER,
+      target_note_id INTEGER,
+      createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+      FOREIGN KEY (target_paper_id) REFERENCES papers (id) ON DELETE CASCADE,
+      FOREIGN KEY (target_task_id) REFERENCES tasks (id) ON DELETE CASCADE,
+      FOREIGN KEY (target_note_id) REFERENCES notes (id) ON DELETE CASCADE,
+      CHECK (
+        (CASE WHEN target_paper_id IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN target_task_id IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN target_note_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+      )
+    )",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_paper ON note_links (note_id, link_type, target_paper_id) WHERE target_paper_id IS NOT NULL")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_task ON note_links (note_id, link_type, target_task_id) WHERE target_task_id IS NOT NULL")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_note_links_unique_note ON note_links (note_id, link_type, target_note_id) WHERE target_note_id IS NOT NULL")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE INDEX IF NOT EXISTS idx_note_links_note_id ON note_links (note_id)")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
 }

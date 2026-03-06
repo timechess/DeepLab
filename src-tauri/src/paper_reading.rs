@@ -8,14 +8,12 @@ use crate::{
   llm::call_llm,
   state::{
     now_rfc3339, AppState, DEFAULT_MISTRAL_OCR_BASE_URL, DEFAULT_MISTRAL_OCR_MODEL,
-    DEFAULT_PAPER_READING_PROMPT,
-    DEFAULT_PAPER_READING_SYSTEM_PROMPT, HF_PAPER_API_BASE_URL,
+    DEFAULT_PAPER_READING_PROMPT, DEFAULT_PAPER_READING_SYSTEM_PROMPT, HF_PAPER_API_BASE_URL,
     PAPER_READING_WORKFLOW_NAME,
   },
   types::{
-    HfPaperApiResponse, PaperReportCommentInput, PaperReportDetailDto,
-    PaperReportListResponse, PaperReadingTriggerInput, PersistPaper,
-    StartPaperReadingResponse,
+    HfPaperApiResponse, PaperReadingTriggerInput, PaperReportCommentInput, PaperReportDetailDto,
+    PaperReportListResponse, PersistPaper, StartPaperReadingResponse,
   },
 };
 use reqwest::{header, Client};
@@ -41,8 +39,7 @@ pub async fn start_paper_reading_workflow(
   }
 
   if let Some(workflow_id) =
-    find_running_paper_reading_workflow(&state.pool, PAPER_READING_WORKFLOW_NAME, &paper_id)
-      .await?
+    find_running_paper_reading_workflow(&state.pool, PAPER_READING_WORKFLOW_NAME, &paper_id).await?
   {
     return Ok(StartPaperReadingResponse {
       workflow_id,
@@ -282,7 +279,10 @@ fn hf_paper_to_persist(item: HfPaperApiResponse) -> PersistPaper {
   }
 }
 
-async fn fetch_hf_paper(http: &Client, paper_id: &str) -> Result<Option<HfPaperApiResponse>, String> {
+async fn fetch_hf_paper(
+  http: &Client,
+  paper_id: &str,
+) -> Result<Option<HfPaperApiResponse>, String> {
   let url = format!("{HF_PAPER_API_BASE_URL}/{paper_id}");
   let response = http.get(url).send().await.map_err(|e| e.to_string())?;
 
@@ -296,8 +296,8 @@ async fn fetch_hf_paper(http: &Client, paper_id: &str) -> Result<Option<HfPaperA
     return Ok(Some(paper));
   }
   if let Some(nested) = value.get("paper") {
-    let paper = serde_json::from_value::<HfPaperApiResponse>(nested.clone())
-      .map_err(|e| e.to_string())?;
+    let paper =
+      serde_json::from_value::<HfPaperApiResponse>(nested.clone()).map_err(|e| e.to_string())?;
     return Ok(Some(paper));
   }
   Err(String::from("unexpected huggingface paper response format"))
@@ -459,7 +459,9 @@ async fn call_mistral_ocr_markdown(
     }
   }
 
-  Err(String::from("OCR response does not contain markdown content"))
+  Err(String::from(
+    "OCR response does not contain markdown content",
+  ))
 }
 
 #[cfg(test)]

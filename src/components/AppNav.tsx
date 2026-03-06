@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { href: "/", label: "今日推荐" },
+  { href: "/note", label: "双链笔记" },
   { href: "/task", label: "任务清单" },
   { href: "/paper_report", label: "论文精读" },
   { href: "/workflow", label: "工作流管理" },

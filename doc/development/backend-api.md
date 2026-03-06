@@ -51,6 +51,28 @@
 - `update_rule_item(id, { content })` -> `RuleDto`
 - `delete_rule_item(id)` -> `void`
 
+## Note Commands
+
+- `get_note_history(page?, query?)`
+  - 返回: `{ page, pageSize, total, items[] }`
+  - 固定分页: `pageSize = 10`
+
+- `create_note_item()`
+  - 返回: `{ id, title, content, createdAt, updatedAt }`
+  - 标题按“未命名笔记 / 未命名笔记 N”自动分配
+
+- `delete_note_item(id)` -> `void`
+
+- `get_note_detail(id)`
+  - 返回: `{ id, title, content, createdAt, updatedAt }`
+
+- `update_note_content(id, { title, content, links })`
+  - `links[]`: `{ refType: 'paper'|'task'|'note', refId, label? }`
+  - 保存时重建该笔记在 `note_links` 中的结构化双链关系
+
+- `get_note_linked_context(id)`
+  - 返回: `{ papers[], tasks[], notes[] }`
+
 ## Workflow Payload 关键字段
 
 - `dayKey`

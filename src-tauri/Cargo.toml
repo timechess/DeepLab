@@ -26,6 +26,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "json", "chrono"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 
 [dependencies.tauri-plugin-sql]
 features = ["sqlite"]

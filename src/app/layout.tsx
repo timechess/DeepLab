@@ -1,5 +1,5 @@
 import { Atkinson_Hyperlegible, Crimson_Pro } from "next/font/google";
-import { AppNav } from "@/components/AppNav";
+import { LayoutChrome } from "@/components/LayoutChrome";
 import "@/styles/globals.css";
 
 const crimson = Crimson_Pro({
@@ -22,7 +22,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body className={`${crimson.variable} ${atkinson.variable} antialiased`}>
-        <AppNav />
+        <LayoutChrome />
         {children}
       </body>
     </html>
