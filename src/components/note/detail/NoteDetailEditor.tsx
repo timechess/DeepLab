@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   extractNoteLinks,
   fallbackMarkdownFromJson,
+  hasNoteReferenceNode,
 } from "@/components/note/note-utils";
 import { NoteReference } from "@/components/note/referenceExtensions";
 import {
@@ -541,21 +542,14 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     })();
   }, [modal]);
 
-  const markdown = useMemo(() => {
-    if (!editor) {
-      return "";
-    }
-    const generated = editor.getMarkdown?.() ?? "";
-    if (generated.trim()) {
-      return generated;
-    }
-    return fallbackMarkdownFromJson(editor.getJSON());
-  }, [editor]);
-
   const downloadMarkdown = useCallback(() => {
     void (async () => {
       setError(null);
       setNotice(null);
+      if (!editor) {
+        setError("编辑器尚未就绪，暂时无法导出。");
+        return;
+      }
       const defaultPath = `${title.trim() || "note"}.md`;
       const targetPath = await save({
         title: "导出 Markdown",
@@ -566,6 +560,12 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         return;
       }
       try {
+        const json = editor.getJSON();
+        const shouldPreferFallback = hasNoteReferenceNode(json);
+        const generated = shouldPreferFallback ? "" : editor.getMarkdown?.() ?? "";
+        const markdown = generated.trim()
+          ? generated
+          : fallbackMarkdownFromJson(json);
         await writeTextFile(targetPath, markdown);
         setNotice(`已导出到：${targetPath}`);
       } catch (saveError) {
@@ -574,7 +574,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         );
       }
     })();
-  }, [markdown, title]);
+  }, [editor, title]);
 
   if (!noteId || Number.isNaN(noteId)) {
     return (

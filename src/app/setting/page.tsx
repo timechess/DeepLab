@@ -8,6 +8,7 @@ import {
   type RuntimeSettingUpsertInput,
   updateRuntimeSetting,
 } from "@/lib/settings";
+import { checkForAppUpdate } from "@/lib/updater";
 
 function mapToInput(source: RuntimeSettingDTO): RuntimeSettingUpsertInput {
   return {
@@ -32,6 +33,7 @@ export default function SettingPage() {
   const [input, setInput] = useState<RuntimeSettingUpsertInput | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,6 +103,28 @@ export default function SettingPage() {
     [input],
   );
 
+  const handleCheckUpdate = useCallback(async () => {
+    setCheckingUpdate(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await checkForAppUpdate();
+      if (result.status === "up-to-date") {
+        setMessage("当前已是最新版本");
+      } else if (result.status === "available") {
+        setMessage(`检测到新版本 ${result.version}，可稍后安装`);
+      } else {
+        setMessage(`新版本 ${result.version} 已下载完成，请重启应用`);
+      }
+    } catch (updateError) {
+      setError(
+        updateError instanceof Error ? updateError.message : String(updateError),
+      );
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, []);
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-6 py-12">
       <header className="mb-10 flex items-end justify-between gap-4">
@@ -140,13 +164,23 @@ export default function SettingPage() {
             ) : (
               <p className="text-sm text-[#8ba2c7]">修改后请先保存配置</p>
             )}
-            <button
-              type="submit"
-              disabled={saving}
-              className="cursor-pointer rounded-full bg-[#2563EB] px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-[#1D4ED8] disabled:opacity-60"
-            >
-              {saving ? "保存中..." : "保存设置"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={checkingUpdate}
+                onClick={() => void handleCheckUpdate()}
+                className="cursor-pointer rounded-full border border-[#2d3a52] px-6 py-3 text-sm font-semibold text-[#c7d5ef] transition-colors duration-200 hover:bg-[#142033] disabled:opacity-60"
+              >
+                {checkingUpdate ? "检查中..." : "检查更新"}
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="cursor-pointer rounded-full bg-[#2563EB] px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-[#1D4ED8] disabled:opacity-60"
+              >
+                {saving ? "保存中..." : "保存设置"}
+              </button>
+            </div>
           </section>
 
           <section className="rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-6">

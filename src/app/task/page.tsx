@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   createTaskItem,
   deleteTaskItem,
@@ -41,6 +42,9 @@ export default function TaskPage() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<TaskListResponse | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
+  const [pendingDeleteTask, setPendingDeleteTask] = useState<TaskItem | null>(
+    null,
+  );
 
   const totalPages = useMemo(() => {
     if (!data || data.pageSize <= 0) {
@@ -333,7 +337,7 @@ export default function TaskPage() {
                           <button
                             type="button"
                             disabled={saving}
-                            onClick={() => void handleDelete(task.id)}
+                            onClick={() => setPendingDeleteTask(task)}
                             className="cursor-pointer rounded-full border border-[#ff6f91] px-4 py-2 text-xs font-semibold text-[#ff9fba] transition-colors duration-200 hover:bg-[#3a1220] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6f91]/40 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             删除任务
@@ -378,6 +382,21 @@ export default function TaskPage() {
           </div>
         </div>
       </section>
+      <ConfirmDialog
+        open={pendingDeleteTask !== null}
+        title="确认删除任务"
+        description={`删除后将无法恢复：${pendingDeleteTask?.title ?? ""}`}
+        confirmText="删除任务"
+        loading={saving}
+        onCancel={() => setPendingDeleteTask(null)}
+        onConfirm={() => {
+          if (!pendingDeleteTask) {
+            return;
+          }
+          void handleDelete(pendingDeleteTask.id);
+          setPendingDeleteTask(null);
+        }}
+      />
     </main>
   );
 }

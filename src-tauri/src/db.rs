@@ -997,6 +997,22 @@ fn tiptap_node_to_markdown(node: &Value) -> String {
       });
       format!("$$\n{text}\n$$")
     }
+    "noteReference" => {
+      let ref_type = attrs
+        .and_then(|value| value.get("refType"))
+        .and_then(Value::as_str)
+        .unwrap_or("note");
+      let ref_id = attrs
+        .and_then(|value| value.get("refId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+      let label = attrs
+        .and_then(|value| value.get("label"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(ref_id);
+      format!("[[{ref_type}:{ref_id}|{label}]]")
+    }
     _ => {
       if children.is_empty() {
         node
@@ -1017,6 +1033,55 @@ fn prefix_markdown_lines(content: &str, prefix: &str) -> String {
     .map(|line| format!("{prefix}{line}"))
     .collect::<Vec<String>>()
     .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn normalize_note_content_to_markdown_should_render_note_reference() {
+    let raw = json!({
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "参考任务 " },
+            {
+              "type": "noteReference",
+              "attrs": {
+                "refType": "task",
+                "refId": "42",
+                "label": "修复导出问题"
+              }
+            },
+            { "type": "text", "text": " 已完成" }
+          ]
+        }
+      ]
+    })
+    .to_string();
+
+    let markdown = normalize_note_content_to_markdown(&raw);
+    assert_eq!(markdown, "参考任务 [[task:42|修复导出问题]] 已完成");
+  }
+
+  #[test]
+  fn normalize_note_content_to_markdown_should_fallback_to_id_as_label() {
+    let raw = json!({
+      "type": "noteReference",
+      "attrs": {
+        "refType": "note",
+        "refId": "7",
+        "label": ""
+      }
+    })
+    .to_string();
+
+    let markdown = normalize_note_content_to_markdown(&raw);
+    assert_eq!(markdown, "[[note:7|7]]");
+  }
 }
 
 pub async fn get_runtime_setting_row(pool: &SqlitePool) -> Result<RuntimeSettingRow, String> {

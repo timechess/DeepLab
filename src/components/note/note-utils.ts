@@ -7,6 +7,27 @@ interface RefToken {
   label: string;
 }
 
+function walkForNodeType(
+  node: JSONContent | null | undefined,
+  targetType: string,
+): boolean {
+  if (!node) {
+    return false;
+  }
+  if (node.type === targetType) {
+    return true;
+  }
+  if (!Array.isArray(node.content)) {
+    return false;
+  }
+  for (const child of node.content) {
+    if (walkForNodeType(child as JSONContent, targetType)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function walk(node: JSONContent | null | undefined, refs: RefToken[]): void {
   if (!node) {
     return;
@@ -54,6 +75,10 @@ export function extractNoteLinks(doc: JSONContent): NoteLinkRefInput[] {
   return [...dedup.values()];
 }
 
+export function hasNoteReferenceNode(doc: JSONContent): boolean {
+  return walkForNodeType(doc, "noteReference");
+}
+
 function inlineText(node: JSONContent | null | undefined): string {
   if (!node) {
     return "";
@@ -68,7 +93,7 @@ function inlineText(node: JSONContent | null | undefined): string {
     const label = attrs?.label ?? attrs?.refId ?? "ref";
     const refType = attrs?.refType ?? "ref";
     const refId = attrs?.refId ?? "";
-    return `[[${refType}:${refId}|${label}]]`;
+    return `[[${refType}:${refId} | ${label}]]`;
   }
   const children = node.content ?? [];
   return children.map((child) => inlineText(child)).join("");

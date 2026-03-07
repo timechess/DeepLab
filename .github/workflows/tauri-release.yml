@@ -1,4 +1,4 @@
-name: Tauri Draft Release
+name: Tauri Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  publish-tauri:
+  build-tauri:
     strategy:
       fail-fast: false
       matrix:
@@ -18,11 +18,11 @@ jobs:
           - platform: "ubuntu-latest"
             args: ""
           - platform: "windows-latest"
-            args: "--target x86_64-pc-windows-msvc --no-sign"
+            args: "--target x86_64-pc-windows-msvc"
           - platform: "macos-latest"
-            args: "--target aarch64-apple-darwin --no-sign"
+            args: "--target aarch64-apple-darwin"
           - platform: "macos-latest"
-            args: "--target x86_64-apple-darwin --no-sign"
+            args: "--target x86_64-apple-darwin"
 
     runs-on: ${{ matrix.platform }}
 
@@ -63,13 +63,16 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and publish Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: "DeepLab v__VERSION__"
-          releaseBody: "Draft release build for DeepLab v__VERSION__."
-          releaseDraft: true
+          tagName: ${{ github.ref_name }}
+          releaseName: "DeepLab ${{ github.ref_name }}"
+          releaseBody: "Automated release build for DeepLab ${{ github.ref_name }}."
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
