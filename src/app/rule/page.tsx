@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   createRule,
   deleteRule,
@@ -17,6 +18,9 @@ export default function RulePage() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingContent, setEditingContent] = useState("");
+  const [pendingDeleteRule, setPendingDeleteRule] = useState<RuleItem | null>(
+    null,
+  );
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -216,7 +220,7 @@ export default function RulePage() {
                         )}
                         <button
                           type="button"
-                          onClick={() => void handleDelete(rule.id)}
+                          onClick={() => setPendingDeleteRule(rule)}
                           disabled={saving}
                           className="cursor-pointer rounded-full border border-[#ff6f91] px-3 py-1 text-xs text-[#ff9fba] disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -231,6 +235,21 @@ export default function RulePage() {
           </table>
         </div>
       </section>
+      <ConfirmDialog
+        open={pendingDeleteRule !== null}
+        title="确认删除规则"
+        description={`删除后将无法恢复：${pendingDeleteRule?.content ?? ""}`}
+        confirmText="删除规则"
+        loading={saving}
+        onCancel={() => setPendingDeleteRule(null)}
+        onConfirm={() => {
+          if (!pendingDeleteRule) {
+            return;
+          }
+          void handleDelete(pendingDeleteRule.id);
+          setPendingDeleteRule(null);
+        }}
+      />
     </main>
   );
 }

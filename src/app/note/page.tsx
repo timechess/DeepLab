@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   createNoteItem,
   deleteNoteItem,
   getNoteHistory,
+  type NoteListItem,
   type NoteHistoryResponse,
 } from "@/lib/note";
 
@@ -16,6 +18,8 @@ export default function NotePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<NoteHistoryResponse | null>(null);
+  const [pendingDeleteNote, setPendingDeleteNote] =
+    useState<NoteListItem | null>(null);
 
   const totalPages = useMemo(() => {
     if (!data || data.pageSize <= 0) {
@@ -160,7 +164,7 @@ export default function NotePage() {
                         </Link>
                         <button
                           type="button"
-                          onClick={() => void handleDelete(item.id)}
+                          onClick={() => setPendingDeleteNote(item)}
                           className="cursor-pointer rounded-full border border-[#6e2a45] px-3 py-1 text-xs font-semibold text-[#ffb2cc] transition-colors duration-200 hover:bg-[#2a1020]"
                         >
                           删除
@@ -198,6 +202,21 @@ export default function NotePage() {
           </div>
         </div>
       </section>
+      <ConfirmDialog
+        open={pendingDeleteNote !== null}
+        title="确认删除笔记"
+        description={`删除后将无法恢复：${pendingDeleteNote?.title ?? ""}`}
+        confirmText="删除笔记"
+        loading={saving}
+        onCancel={() => setPendingDeleteNote(null)}
+        onConfirm={() => {
+          if (!pendingDeleteNote) {
+            return;
+          }
+          void handleDelete(pendingDeleteNote.id);
+          setPendingDeleteNote(null);
+        }}
+      />
     </main>
   );
 }
