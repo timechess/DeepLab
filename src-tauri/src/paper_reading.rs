@@ -18,6 +18,8 @@ use crate::{
 };
 use reqwest::{header, Client};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 const ARXIV_ABS_PREFIX: &str = "https://arxiv.org/abs/";
@@ -128,11 +130,15 @@ async fn run_paper_reading_workflow(
   {
     return Err(String::from("only mistral_ai OCR provider is supported"));
   }
-  let ocr_model = runtime_setting
+  let mistral_ocr_model = runtime_setting
     .ocr_model
     .clone()
     .filter(|value| !value.trim().is_empty())
     .unwrap_or_else(|| String::from(DEFAULT_MISTRAL_OCR_MODEL));
+  let has_mistral_key = runtime_setting
+    .ocr_api_key
+    .as_deref()
+    .is_some_and(|value| !value.trim().is_empty());
 
   let (paper, source) = match fetch_hf_paper(http, paper_id).await? {
     Some(hf_paper) => (hf_paper_to_persist(hf_paper), String::from("huggingface")),
@@ -146,7 +152,18 @@ async fn run_paper_reading_workflow(
   let pdf_url = format!("{ARXIV_PDF_PREFIX}{paper_id}");
   payload["pdfUrl"] = Value::String(pdf_url.clone());
 
-  let ocr_markdown = call_mistral_ocr_markdown(http, &runtime_setting, &pdf_url).await?;
+  let (ocr_markdown, ocr_model) = if has_mistral_key {
+    (
+      call_mistral_ocr_markdown(http, &runtime_setting, &pdf_url).await?,
+      mistral_ocr_model,
+    )
+  } else {
+    (
+      extract_pdf_text_with_fallback(http, &pdf_url, paper_id).await?,
+      String::from("pdf-extract-fallback"),
+    )
+  };
+  payload["ocrMode"] = Value::String(ocr_model.clone());
   payload["ocrChars"] = json!(ocr_markdown.chars().count());
 
   let prompt_template = runtime_setting
@@ -462,6 +479,66 @@ async fn call_mistral_ocr_markdown(
   Err(String::from(
     "OCR response does not contain markdown content",
   ))
+}
+
+async fn extract_pdf_text_with_fallback(
+  http: &Client,
+  pdf_url: &str,
+  paper_id: &str,
+) -> Result<String, String> {
+  let pdf_bytes = http
+    .get(pdf_url)
+    .send()
+    .await
+    .map_err(|e| e.to_string())?
+    .error_for_status()
+    .map_err(|e| e.to_string())?
+    .bytes()
+    .await
+    .map_err(|e| e.to_string())?
+    .to_vec();
+  let temp_path = make_temp_pdf_path(paper_id);
+
+  tokio::task::spawn_blocking(move || extract_pdf_text_from_temp_file(&temp_path, &pdf_bytes))
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn extract_pdf_text_from_temp_file(path: &Path, pdf_bytes: &[u8]) -> Result<String, String> {
+  std::fs::write(path, pdf_bytes).map_err(|e| e.to_string())?;
+
+  let extract_result = pdf_extract::extract_text(path).map_err(|e| e.to_string());
+  let _ = std::fs::remove_file(path);
+
+  let text = extract_result?;
+  let trimmed = text.trim();
+  if trimmed.is_empty() {
+    return Err(String::from("pdf-extract fallback returned empty text"));
+  }
+
+  Ok(trimmed.to_string())
+}
+
+fn make_temp_pdf_path(paper_id: &str) -> PathBuf {
+  let mut path = std::env::temp_dir();
+  let timestamp_nanos = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|duration| duration.as_nanos())
+    .unwrap_or(0);
+  let safe_paper_id: String = paper_id
+    .chars()
+    .map(|ch| {
+      if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+        ch
+      } else {
+        '_'
+      }
+    })
+    .collect();
+  path.push(format!(
+    "deeplab-paper-reading-{safe_paper_id}-{timestamp_nanos}.pdf"
+  ));
+  path
 }
 
 #[cfg(test)]

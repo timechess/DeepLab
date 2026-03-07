@@ -45,6 +45,12 @@ pub fn run() {
   }];
 
   let builder = tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+      let _ = app
+        .get_webview_window("main")
+        .expect("no main window")
+        .set_focus();
+    }))
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())

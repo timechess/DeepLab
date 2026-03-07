@@ -229,6 +229,18 @@ export default function SettingPage() {
             <h2 className="font-serif text-3xl font-semibold text-[#e5ecff]">
               OCR配置
             </h2>
+            <div className="mt-3 rounded-2xl border border-[#5d4720] bg-[#2a1f0d] p-4">
+              <p className="text-xs font-semibold tracking-wide text-[#f7d08a]">
+                回退机制说明
+              </p>
+              <p className="mt-2 text-xs text-[#f7d08a]/90">
+                当未设置 Mistral OCR API Key 时，系统会自动下载 PDF 到本地临时目录并使用
+                <code className="mx-1 rounded bg-[#201707] px-1 py-0.5 text-[11px]">
+                  pdf-extract
+                </code>
+                提取文本。该回退机制可保障流程可用，但相比 Mistral OCR 报告质量可能下降。
+              </p>
+            </div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <label className="text-sm text-[#c7d5ef]">
                 OCR Provider
