@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -38,6 +39,13 @@
     "sql": {
       "preload": [
         "sqlite:deeplab.sqlite"
+      ]
+    },
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBRDA4QkY2Q0IyNkIyMDIKUldRQ3NpYkw5b3ZRcWpqTEdSSCs5SWMvWU55dkFweWJaT25xajFsMFV4SmdSUC85NS8yNXo0ZCsK",
+      "endpoints": [
+        "https://github.com/timechess/DeepLab/releases/latest/download/latest.json"
       ]
     }
   }

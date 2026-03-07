@@ -9,6 +9,7 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    "updater:default",
     "fs:default",
     "fs:allow-write-text-file"
   ]
