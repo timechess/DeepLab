@@ -1,7 +1,7 @@
 use chrono::Local;
 use reqwest::Client;
 use sqlx::{
-  sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
+  sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions},
   ConnectOptions,
 };
 use std::str::FromStr;
@@ -40,6 +40,25 @@ pub fn now_rfc3339() -> String {
   Local::now().to_rfc3339()
 }
 
+async fn configure_sqlite_connection(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+  sqlx::query("PRAGMA foreign_keys = ON;")
+    .execute(&mut *conn)
+    .await?;
+  sqlx::query("PRAGMA journal_mode = WAL;")
+    .execute(&mut *conn)
+    .await?;
+  sqlx::query("PRAGMA synchronous = NORMAL;")
+    .execute(&mut *conn)
+    .await?;
+  sqlx::query("PRAGMA busy_timeout = 5000;")
+    .execute(&mut *conn)
+    .await?;
+  sqlx::query("PRAGMA wal_autocheckpoint = 200;")
+    .execute(&mut *conn)
+    .await?;
+  Ok(())
+}
+
 pub async fn init_state(app_handle: &AppHandle) -> Result<AppState, String> {
   let app_config_dir = app_handle
     .path()
@@ -56,9 +75,21 @@ pub async fn init_state(app_handle: &AppHandle) -> Result<AppState, String> {
 
   let pool = SqlitePoolOptions::new()
     .max_connections(5)
+    .after_connect(|conn, _meta| {
+      Box::pin(async move {
+        configure_sqlite_connection(conn).await?;
+        Ok(())
+      })
+    })
     .connect_with(options)
     .await
     .map_err(|e| e.to_string())?;
+
+  // Opportunistically shrink stale WAL segments at startup.
+  let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
+    .fetch_optional(&pool)
+    .await;
+
   Ok(AppState {
     pool,
     http: Client::new(),

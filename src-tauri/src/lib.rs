@@ -37,12 +37,20 @@ use work_report::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  let migrations = vec![Migration {
-    version: 1,
-    description: "init_deeplab_schema",
-    sql: include_str!("../resource/init_db.sql"),
-    kind: MigrationKind::Up,
-  }];
+  let migrations = vec![
+    Migration {
+      version: 1,
+      description: "init_deeplab_schema",
+      sql: include_str!("../resource/init_db.sql"),
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 2,
+      description: "wal_hardening",
+      sql: include_str!("../resource/migrations/0002_wal_hardening.sql"),
+      kind: MigrationKind::Up,
+    },
+  ];
 
   let builder = tauri::Builder::default()
     .plugin(tauri_plugin_single_instance::init(|app, _, _| {
