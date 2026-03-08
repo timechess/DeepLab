@@ -128,6 +128,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const targetQueryInputRef = useRef<HTMLInputElement | null>(null);
   const editorSurfaceRef = useRef<HTMLDivElement | null>(null);
   const normalizingMathRef = useRef(false);
+  const loadingSeqRef = useRef(0);
+  const hydratingContentRef = useRef(false);
+  const pendingDirtyWhileSavingRef = useRef(false);
 
   const refreshContext = useCallback(async () => {
     if (!noteId) {
@@ -236,6 +239,10 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       },
     },
     onUpdate: ({ editor: activeEditor }) => {
+      if (hydratingContentRef.current) {
+        hydratingContentRef.current = false;
+        return;
+      }
       if (!normalizingMathRef.current) {
         const normalized = normalizeDisplayMathParagraphs(activeEditor);
         if (normalized) {
@@ -250,7 +257,13 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         return;
       }
 
-      setSaveState((current) => (current === "saving" ? current : "dirty"));
+      setSaveState((current) => {
+        if (current === "saving") {
+          pendingDirtyWhileSavingRef.current = true;
+          return current;
+        }
+        return "dirty";
+      });
       syncSlashTrigger(activeEditor);
     },
     onSelectionUpdate: ({ editor: activeEditor }) => {
@@ -331,6 +344,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     if (!editor || !noteId || !loaded) {
       return;
     }
+    pendingDirtyWhileSavingRef.current = false;
     setSaveState("saving");
     setError(null);
     setNotice(null);
@@ -342,9 +356,11 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         links: extractNoteLinks(json),
       });
       setTitle(response.title);
-      setSaveState("saved");
+      setSaveState(pendingDirtyWhileSavingRef.current ? "dirty" : "saved");
+      pendingDirtyWhileSavingRef.current = false;
       await refreshContext();
     } catch (saveError) {
+      pendingDirtyWhileSavingRef.current = false;
       setSaveState("failed");
       setError(
         saveError instanceof Error ? saveError.message : String(saveError),
@@ -356,22 +372,40 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     if (!editor || !noteId) {
       return;
     }
+    const currentLoadSeq = loadingSeqRef.current + 1;
+    loadingSeqRef.current = currentLoadSeq;
+    setLoaded(false);
+    setSaveState("saved");
+    setError(null);
+    setTitle("");
     void (async () => {
       try {
         const detail = await getNoteDetail(noteId);
+        if (loadingSeqRef.current !== currentLoadSeq) {
+          return;
+        }
         setTitle(detail.title);
         const parsed = safeJsonParse(detail.content) as JSONContent;
         const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
+        hydratingContentRef.current = true;
         editor.commands.setContent(normalized);
+        if (loadingSeqRef.current !== currentLoadSeq) {
+          return;
+        }
         setLoaded(true);
         setSaveState("saved");
         setError(null);
       } catch (loadError) {
+        if (loadingSeqRef.current !== currentLoadSeq) {
+          return;
+        }
         setError(
           loadError instanceof Error ? loadError.message : String(loadError),
         );
       }
-      await refreshContext();
+      if (loadingSeqRef.current === currentLoadSeq) {
+        await refreshContext();
+      }
     })();
   }, [editor, noteId, refreshContext]);
 
@@ -676,7 +710,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
             value={title}
             onChange={(event) => {
               setTitle(event.target.value);
-              setSaveState("dirty");
+              if (loaded) {
+                setSaveState("dirty");
+              }
             }}
             placeholder="笔记标题"
             className="w-full rounded-2xl border border-[#243651] bg-[#0f1724] px-4 py-3 text-xl font-semibold text-[#e5ecff] shadow-[0_10px_26px_rgba(0,0,0,0.25)] outline-none transition-colors focus:border-[#4f7dff]"
