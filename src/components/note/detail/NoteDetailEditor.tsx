@@ -3,6 +3,7 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { Editor, JSONContent } from "@tiptap/core";
+import { Extension } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -56,6 +57,41 @@ import {
 
 const DEBOUNCE_MS = 1200;
 const PICKER_DEBOUNCE_MS = 240;
+
+const ListBehaviorShortcuts = Extension.create({
+  name: "listBehaviorShortcuts",
+  addKeyboardShortcuts() {
+    return {
+      Enter: () => {
+        if (!this.editor.isActive("listItem")) {
+          return false;
+        }
+        const commands = this.editor.commands as {
+          splitListItem?: (typeOrName: string) => boolean;
+        };
+        return commands.splitListItem?.("listItem") ?? false;
+      },
+      Tab: () => {
+        if (!this.editor.isActive("listItem")) {
+          return false;
+        }
+        const commands = this.editor.commands as {
+          sinkListItem?: (typeOrName: string) => boolean;
+        };
+        return commands.sinkListItem?.("listItem") ?? false;
+      },
+      "Shift-Tab": () => {
+        if (!this.editor.isActive("listItem")) {
+          return false;
+        }
+        const commands = this.editor.commands as {
+          liftListItem?: (typeOrName: string) => boolean;
+        };
+        return commands.liftListItem?.("listItem") ?? false;
+      },
+    };
+  },
+});
 
 interface NoteDetailEditorProps {
   noteId: number;
@@ -190,6 +226,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           throwOnError: false,
         },
       }),
+      ListBehaviorShortcuts,
       NoteReference,
     ],
     editorProps: {

@@ -111,6 +111,24 @@ pre {
   line-height: 1.85;
 }
 
+.report-markdown ul {
+  margin: 0.7rem 0 0.7rem 1.35rem;
+  list-style-type: disc;
+}
+
+.report-markdown ol {
+  margin: 0.7rem 0 0.7rem 1.35rem;
+  list-style-type: decimal;
+}
+
+.report-markdown ul ul {
+  list-style-type: circle;
+}
+
+.report-markdown ol ol {
+  list-style-type: lower-alpha;
+}
+
 .report-markdown a {
   color: #9fc1ff;
   text-decoration: underline;
@@ -240,6 +258,22 @@ pre {
 .note-editor ol {
   margin: 0.55rem 0 0.55rem 1.3rem;
   padding: 0;
+}
+
+.note-editor ul {
+  list-style-type: disc;
+}
+
+.note-editor ol {
+  list-style-type: decimal;
+}
+
+.note-editor ul ul {
+  list-style-type: circle;
+}
+
+.note-editor ol ol {
+  list-style-type: lower-alpha;
 }
 
 .note-editor li + li {
