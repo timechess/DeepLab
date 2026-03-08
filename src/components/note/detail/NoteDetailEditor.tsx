@@ -116,6 +116,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     null,
   );
   const [paperTab, setPaperTab] = useState<"rendered" | "source">("rendered");
+  const [focusMode, setFocusMode] = useState(false);
 
   const [slashMenu, setSlashMenu] =
     useState<SlashMenuState>(emptySlashMenuState);
@@ -131,6 +132,28 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const loadingSeqRef = useRef(0);
   const hydratingContentRef = useRef(false);
   const pendingDirtyWhileSavingRef = useRef(false);
+  const focusModeRef = useRef(false);
+  const centerLineRafRef = useRef<number | null>(null);
+
+  const centerCurrentLine = useCallback((activeEditor: Editor) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const from = activeEditor.state.selection.from;
+    const coords = activeEditor.view.coordsAtPos(from);
+    const absoluteLineTop = window.scrollY + coords.top;
+    const targetScrollTop = Math.max(
+      0,
+      absoluteLineTop - window.innerHeight / 2 + 20,
+    );
+    if (Math.abs(window.scrollY - targetScrollTop) < 20) {
+      return;
+    }
+    window.scrollTo({
+      top: targetScrollTop,
+      behavior: "auto",
+    });
+  }, []);
 
   const refreshContext = useCallback(async () => {
     if (!noteId) {
@@ -265,9 +288,27 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         return "dirty";
       });
       syncSlashTrigger(activeEditor);
+      if (focusModeRef.current) {
+        if (centerLineRafRef.current != null) {
+          window.cancelAnimationFrame(centerLineRafRef.current);
+        }
+        centerLineRafRef.current = window.requestAnimationFrame(() => {
+          centerCurrentLine(activeEditor);
+          centerLineRafRef.current = null;
+        });
+      }
     },
     onSelectionUpdate: ({ editor: activeEditor }) => {
       syncSlashTrigger(activeEditor);
+      if (focusModeRef.current) {
+        if (centerLineRafRef.current != null) {
+          window.cancelAnimationFrame(centerLineRafRef.current);
+        }
+        centerLineRafRef.current = window.requestAnimationFrame(() => {
+          centerCurrentLine(activeEditor);
+          centerLineRafRef.current = null;
+        });
+      }
     },
     immediatelyRender: false,
   });
@@ -367,6 +408,25 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       );
     }
   }, [editor, loaded, noteId, refreshContext, title]);
+
+  useEffect(() => {
+    focusModeRef.current = focusMode;
+  }, [focusMode]);
+
+  useEffect(() => {
+    return () => {
+      if (centerLineRafRef.current != null) {
+        window.cancelAnimationFrame(centerLineRafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!editor || !focusMode) {
+      return;
+    }
+    centerCurrentLine(editor);
+  }, [centerCurrentLine, editor, focusMode]);
 
   useEffect(() => {
     if (!editor || !noteId) {
@@ -679,13 +739,26 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={downloadMarkdown}
-            className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
-          >
-            导出 Markdown
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={downloadMarkdown}
+              className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+            >
+              导出 Markdown
+            </button>
+            <button
+              type="button"
+              onClick={() => setFocusMode((value) => !value)}
+              className={`cursor-pointer rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
+                focusMode
+                  ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
+                  : "border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+              }`}
+            >
+              {focusMode ? "退出专注模式" : "专注模式"}
+            </button>
+          </div>
         </div>
       </header>
 

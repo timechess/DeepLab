@@ -219,6 +219,8 @@ pre {
   line-height: 1.8;
   font-size: 1rem;
   text-rendering: optimizeLegibility;
+  /* Keep the last editable line around mid-screen for comfortable typing. */
+  padding-bottom: 50vh;
 }
 
 .note-editor h1,
@@ -484,7 +486,7 @@ pre {
 .Tiptap-math-hover-preview {
   position: fixed;
   z-index: 80;
-  max-width: min(70vw, 520px);
+  max-width: min(82vw, 720px);
   border: 1px solid #2d3a52;
   border-radius: 0.75rem;
   background: #0b1424;
@@ -495,7 +497,16 @@ pre {
 }
 
 .Tiptap-math-hover-preview-content {
-  overflow-x: auto;
+  overflow: hidden;
+}
+
+.Tiptap-math-hover-preview .katex-display {
+  margin: 0;
+  overflow: visible;
+}
+
+.Tiptap-math-hover-preview-content::-webkit-scrollbar {
+  display: none;
 }
 
 .Tiptap-math-hover-preview--error {
