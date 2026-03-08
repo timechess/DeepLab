@@ -97,12 +97,19 @@ interface NoteDetailEditorProps {
   noteId: number;
 }
 
+type NoteDraftSnapshot = {
+  title: string;
+  content: string;
+  updatedAt: number;
+};
+
 export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const [title, setTitle] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
 
   const [context, setContext] = useState<NoteLinkedContext>({
     papers: [],
@@ -134,6 +141,40 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const pendingDirtyWhileSavingRef = useRef(false);
   const focusModeRef = useRef(false);
   const centerLineRafRef = useRef<number | null>(null);
+  const draftStorageKey = useMemo(
+    () => `deeplab-note-draft:${noteId}`,
+    [noteId],
+  );
+
+  const persistDraft = useCallback(
+    (draftTitle: string, draftJson: JSONContent) => {
+      if (typeof window === "undefined" || !noteId) {
+        return;
+      }
+      const snapshot: NoteDraftSnapshot = {
+        title: draftTitle,
+        content: JSON.stringify(draftJson),
+        updatedAt: Date.now(),
+      };
+      try {
+        window.localStorage.setItem(draftStorageKey, JSON.stringify(snapshot));
+      } catch {
+        // no-op
+      }
+    },
+    [draftStorageKey, noteId],
+  );
+
+  const clearDraft = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.removeItem(draftStorageKey);
+    } catch {
+      // no-op
+    }
+  }, [draftStorageKey]);
 
   const centerCurrentLine = useCallback((activeEditor: Editor) => {
     if (typeof window === "undefined") {
@@ -287,6 +328,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         }
         return "dirty";
       });
+      persistDraft(title, activeEditor.getJSON() as JSONContent);
       syncSlashTrigger(activeEditor);
       if (focusModeRef.current) {
         if (centerLineRafRef.current != null) {
@@ -394,11 +436,14 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       const response = await updateNoteContent(noteId, {
         title: title.trim() || "未命名笔记",
         content: JSON.stringify(json),
+        expectedUpdatedAt: serverUpdatedAt,
         links: extractNoteLinks(json),
       });
       setTitle(response.title);
+      setServerUpdatedAt(response.updatedAt);
       setSaveState(pendingDirtyWhileSavingRef.current ? "dirty" : "saved");
       pendingDirtyWhileSavingRef.current = false;
+      clearDraft();
       await refreshContext();
     } catch (saveError) {
       pendingDirtyWhileSavingRef.current = false;
@@ -407,7 +452,15 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         saveError instanceof Error ? saveError.message : String(saveError),
       );
     }
-  }, [editor, loaded, noteId, refreshContext, title]);
+  }, [
+    clearDraft,
+    editor,
+    loaded,
+    noteId,
+    refreshContext,
+    serverUpdatedAt,
+    title,
+  ]);
 
   useEffect(() => {
     focusModeRef.current = focusMode;
@@ -437,6 +490,8 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     setLoaded(false);
     setSaveState("saved");
     setError(null);
+    setNotice(null);
+    setServerUpdatedAt(null);
     setTitle("");
     void (async () => {
       try {
@@ -444,8 +499,39 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
         }
-        setTitle(detail.title);
-        const parsed = safeJsonParse(detail.content) as JSONContent;
+        let targetTitle = detail.title;
+        let targetContent = detail.content;
+        let recoveredDraft = false;
+        if (typeof window !== "undefined") {
+          try {
+            const rawDraft = window.localStorage.getItem(draftStorageKey);
+            if (rawDraft) {
+              const draft = JSON.parse(rawDraft) as Partial<NoteDraftSnapshot>;
+              if (
+                typeof draft.updatedAt === "number" &&
+                typeof draft.content === "string"
+              ) {
+                const remoteUpdatedAt = Date.parse(detail.updatedAt);
+                const remoteTs = Number.isNaN(remoteUpdatedAt)
+                  ? 0
+                  : remoteUpdatedAt;
+                if (draft.updatedAt > remoteTs + 1000) {
+                  targetTitle =
+                    typeof draft.title === "string" && draft.title.trim()
+                      ? draft.title
+                      : detail.title;
+                  targetContent = draft.content;
+                  recoveredDraft = true;
+                }
+              }
+            }
+          } catch {
+            // no-op
+          }
+        }
+        setTitle(targetTitle);
+        setServerUpdatedAt(detail.updatedAt);
+        const parsed = safeJsonParse(targetContent) as JSONContent;
         const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
         hydratingContentRef.current = true;
         editor.commands.setContent(normalized);
@@ -453,8 +539,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           return;
         }
         setLoaded(true);
-        setSaveState("saved");
+        setSaveState(recoveredDraft ? "dirty" : "saved");
         setError(null);
+        setNotice(recoveredDraft ? "已恢复本地草稿，等待自动保存。" : null);
       } catch (loadError) {
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
@@ -467,7 +554,18 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         await refreshContext();
       }
     })();
-  }, [editor, noteId, refreshContext]);
+  }, [draftStorageKey, editor, noteId, refreshContext]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        void saveNow();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [saveNow]);
 
   useEffect(() => {
     if (saveState !== "dirty") {
@@ -785,6 +883,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
               setTitle(event.target.value);
               if (loaded) {
                 setSaveState("dirty");
+                if (editor) {
+                  persistDraft(event.target.value, editor.getJSON());
+                }
               }
             }}
             placeholder="笔记标题"

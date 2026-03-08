@@ -1660,22 +1660,43 @@ pub async fn update_note_content_and_links(
   id: i64,
   title: &str,
   content: &str,
+  expected_updated_at: Option<&str>,
   links: &[NoteLinkRefInput],
 ) -> Result<NoteDetailDto, String> {
   ensure_note_links_schema(pool).await?;
   let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-  let result = sqlx::query(
-    "UPDATE notes
-    SET title = ?1, content = ?2, updatedAt = CURRENT_TIMESTAMP
-    WHERE id = ?3",
-  )
-  .bind(title)
-  .bind(content)
-  .bind(id)
-  .execute(&mut *tx)
-  .await
-  .map_err(|e| e.to_string())?;
+  let result = if let Some(expected) = expected_updated_at {
+    sqlx::query(
+      "UPDATE notes
+      SET title = ?1, content = ?2, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
+      WHERE id = ?3 AND updatedAt = ?4",
+    )
+    .bind(title)
+    .bind(content)
+    .bind(id)
+    .bind(expected)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+  } else {
+    sqlx::query(
+      "UPDATE notes
+      SET title = ?1, content = ?2, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
+      WHERE id = ?3",
+    )
+    .bind(title)
+    .bind(content)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+  };
   if result.rows_affected() == 0 {
+    if expected_updated_at.is_some() {
+      return Err(String::from(
+        "note was modified by another save, please reload and retry",
+      ));
+    }
     return Err(String::from("note not found"));
   }
 

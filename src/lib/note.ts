@@ -33,6 +33,7 @@ export interface NoteLinkRefInput {
 export interface NoteUpsertInput {
   title: string;
   content: string;
+  expectedUpdatedAt?: string | null;
   links: NoteLinkRefInput[];
 }
 

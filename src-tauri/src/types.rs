@@ -347,6 +347,8 @@ pub struct NoteUpsertInput {
   pub title: String,
   pub content: String,
   #[serde(default)]
+  pub expected_updated_at: Option<String>,
+  #[serde(default)]
   pub links: Vec<NoteLinkRefInput>,
 }
 

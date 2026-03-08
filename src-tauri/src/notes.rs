@@ -10,6 +10,7 @@ use crate::{
     NoteUpsertInput, NoteWorkReportOptionDto,
   },
 };
+use serde_json::Value;
 use tauri::State;
 
 #[tauri::command]
@@ -59,8 +60,17 @@ pub async fn update_note_content(
 ) -> Result<NoteDetailDto, String> {
   let title = normalize_title(&input.title)?;
   let content = normalize_content(&input.content)?;
+  let expected_updated_at = normalize_expected_updated_at(input.expected_updated_at);
   let links = normalize_links(input.links);
-  update_note_content_and_links(&state.pool, id, &title, &content, &links).await
+  update_note_content_and_links(
+    &state.pool,
+    id,
+    &title,
+    &content,
+    expected_updated_at.as_deref(),
+    &links,
+  )
+  .await
 }
 
 #[tauri::command]
@@ -113,7 +123,80 @@ fn normalize_content(content: &str) -> Result<String, String> {
   if trimmed.is_empty() {
     return Err(String::from("note content cannot be empty"));
   }
+  if is_effectively_empty_note_document(trimmed)? {
+    return Err(String::from(
+      "note content is empty and was blocked to prevent accidental overwrite",
+    ));
+  }
   Ok(trimmed.to_string())
+}
+
+fn normalize_expected_updated_at(value: Option<String>) -> Option<String> {
+  value.and_then(|raw| {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+      None
+    } else {
+      Some(trimmed.to_string())
+    }
+  })
+}
+
+fn is_effectively_empty_note_document(content: &str) -> Result<bool, String> {
+  let value: Value =
+    serde_json::from_str(content).map_err(|_| String::from("note content is invalid JSON"))?;
+  let Some(root) = value.as_object() else {
+    return Ok(false);
+  };
+  let root_type = root.get("type").and_then(Value::as_str).unwrap_or("");
+  if root_type != "doc" {
+    return Ok(false);
+  }
+  Ok(!node_has_meaningful_content(&value))
+}
+
+fn node_has_meaningful_content(node: &Value) -> bool {
+  let Some(map) = node.as_object() else {
+    return false;
+  };
+  let node_type = map.get("type").and_then(Value::as_str).unwrap_or("");
+  if node_type == "text" {
+    return map
+      .get("text")
+      .and_then(Value::as_str)
+      .map(|text| !text.trim().is_empty())
+      .unwrap_or(false);
+  }
+  if node_type == "noteReference" {
+    return true;
+  }
+  if node_type == "image" {
+    return map
+      .get("attrs")
+      .and_then(Value::as_object)
+      .and_then(|attrs| attrs.get("src"))
+      .and_then(Value::as_str)
+      .map(|src| !src.trim().is_empty())
+      .unwrap_or(false);
+  }
+
+  if let Some(attrs) = map.get("attrs").and_then(Value::as_object) {
+    let latex = attrs
+      .get("latex")
+      .or_else(|| attrs.get("value"))
+      .or_else(|| attrs.get("text"))
+      .and_then(Value::as_str)
+      .map(|s| !s.trim().is_empty())
+      .unwrap_or(false);
+    if latex {
+      return true;
+    }
+  }
+
+  if let Some(children) = map.get("content").and_then(Value::as_array) {
+    return children.iter().any(node_has_meaningful_content);
+  }
+  false
 }
 
 fn normalize_links(links: Vec<NoteLinkRefInput>) -> Vec<NoteLinkRefInput> {
