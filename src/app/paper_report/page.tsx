@@ -7,7 +7,6 @@ import {
   type PaperReportListResponse,
   startPaperReadingWorkflow,
 } from "@/lib/paperReport";
-import { getWorkflowStatus, type WorkflowStatusResponse } from "@/lib/workflow";
 
 function validateArxivInput(value: string): string | null {
   const trimmed = value.trim();
@@ -30,9 +29,6 @@ export default function PaperReportPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<PaperReportListResponse | null>(null);
-  const [activeWorkflowId, setActiveWorkflowId] = useState<number | null>(null);
-  const [activeWorkflowStatus, setActiveWorkflowStatus] =
-    useState<WorkflowStatusResponse | null>(null);
   const [latestPaperId, setLatestPaperId] = useState<string | null>(null);
 
   const inputError = useMemo(
@@ -64,38 +60,9 @@ export default function PaperReportPage() {
     }
   }, [page]);
 
-  const loadWorkflowStatus = useCallback(async () => {
-    if (!activeWorkflowId) {
-      setActiveWorkflowStatus(null);
-      return;
-    }
-    try {
-      const status = await getWorkflowStatus(activeWorkflowId);
-      setActiveWorkflowStatus(status);
-      if (status.stage === "success" || status.stage === "failed") {
-        void loadHistory();
-      }
-    } catch {
-      // no-op: status panel should not block the page
-    }
-  }, [activeWorkflowId, loadHistory]);
-
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
-
-  useEffect(() => {
-    if (!activeWorkflowId) {
-      return;
-    }
-    void loadWorkflowStatus();
-    const timer = window.setInterval(() => {
-      void loadWorkflowStatus();
-    }, 2000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [activeWorkflowId, loadWorkflowStatus]);
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -113,9 +80,7 @@ export default function PaperReportPage() {
           paperIdOrUrl: paperInput.trim(),
         });
         setLatestPaperId(response.paperId);
-        setActiveWorkflowId(response.workflowId);
-        setPaperInput("");
-        void loadHistory();
+        window.location.href = `/workflow?workflowId=${response.workflowId}`;
       } catch (submitError) {
         setError(
           submitError instanceof Error
@@ -126,7 +91,7 @@ export default function PaperReportPage() {
         setSubmitting(false);
       }
     },
-    [loadHistory, paperInput],
+    [paperInput],
   );
 
   return (
@@ -171,23 +136,6 @@ export default function PaperReportPage() {
         ) : null}
         {error ? <p className="mt-3 text-sm text-[#ff9fba]">{error}</p> : null}
       </section>
-
-      {activeWorkflowId ? (
-        <section className="mt-5 rounded-3xl border border-[#2d3a52] bg-[#101a2c] p-4">
-          <p className="text-xs font-semibold tracking-wide text-[#8ba2c7]">
-            当前任务
-          </p>
-          <p className="mt-1 text-sm text-[#dbe6ff]">
-            workflowId: {activeWorkflowId} / stage:{" "}
-            {activeWorkflowStatus?.stage ?? "running"}
-          </p>
-          {activeWorkflowStatus?.error ? (
-            <p className="mt-2 text-sm text-[#ff9fba]">
-              {activeWorkflowStatus.error}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
 
       <section className="mt-6 rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-5 shadow-[0_14px_40px_rgba(0,0,0,0.35)]">
         {loading ? (
