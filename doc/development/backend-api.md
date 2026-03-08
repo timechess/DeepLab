@@ -66,9 +66,9 @@
 - `get_note_detail(id)`
   - 返回: `{ id, title, content, createdAt, updatedAt }`
 
-- `update_note_content(id, { title, content, links })`
-  - `links[]`: `{ refType: 'paper'|'task'|'note', refId, label? }`
-  - 保存时重建该笔记在 `note_links` 中的结构化双链关系
+- `update_note_content(id, { title, content, expectedUpdatedAt?, saveSource? })`
+  - 后端会从 `content`（Tiptap JSON）中提取 `noteReference` 并重建 `note_links`
+  - 当引用目标不存在时会跳过该引用并继续保存，返回 `skippedLinks[]`
 
 - `get_note_linked_context(id)`
   - 返回: `{ papers[], tasks[], notes[] }`

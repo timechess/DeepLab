@@ -10,19 +10,37 @@ vi.mock("@/lib/note", () => ({
   getNoteDetail: vi.fn().mockResolvedValue({
     id: 1,
     title: "未命名笔记",
-    content: '{"type":"doc","content":[{"type":"paragraph"}]}',
+    content:
+      '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}',
+    createdAt: "2026-03-09 00:00:00.000",
+    updatedAt: "2026-03-09 00:00:00.000",
   }),
   getNoteHistory: vi
     .fn()
     .mockResolvedValue({ page: 1, pageSize: 10, total: 0, items: [] }),
   getNoteLinkedContext: vi
     .fn()
-    .mockResolvedValue({ papers: [], tasks: [], notes: [] }),
+    .mockResolvedValue({ papers: [], tasks: [], notes: [], workReports: [] }),
+  getNoteRevisions: vi
+    .fn()
+    .mockResolvedValue({ page: 1, pageSize: 20, total: 0, items: [] }),
+  getNoteRevisionDetail: vi.fn(),
+  restoreNoteRevision: vi.fn(),
   searchNotePapers: vi.fn().mockResolvedValue([]),
+  searchNoteWorkReports: vi.fn().mockResolvedValue([]),
   updateNoteContent: vi.fn().mockResolvedValue({
-    id: 1,
-    title: "未命名笔记",
-    content: '{"type":"doc","content":[{"type":"paragraph"}]}',
+    detail: {
+      id: 1,
+      title: "未命名笔记",
+      content:
+        '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}',
+      createdAt: "2026-03-09 00:00:00.000",
+      updatedAt: "2026-03-09 00:00:00.000",
+    },
+    savedHash: "0",
+    revisionId: 1,
+    savedAt: "2026-03-09 00:00:00.000",
+    skippedLinks: [],
   }),
 }));
 

@@ -41,7 +41,11 @@ export function DetailModal({
       <div className="flex h-[72vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[#1f2a3d] bg-[#0f1724]">
         <div className="flex items-center justify-between border-b border-[#1f2a3d] px-4 py-3">
           <p className="text-sm font-semibold text-[#e5ecff]">
-            {modal.type === "paper" ? "论文精读报告" : "任务详情"}
+            {modal.type === "paper"
+              ? "论文精读报告"
+              : modal.type === "task"
+                ? "任务详情"
+                : "历史版本预览"}
           </p>
           <button
             type="button"
@@ -63,6 +67,21 @@ export function DetailModal({
               <p className="whitespace-pre-wrap">
                 {modal.task.description || "无描述"}
               </p>
+            </div>
+          ) : modal.type === "revision" ? (
+            <div className="space-y-3">
+              <p className="text-xs text-[#8ba2c7]">
+                #{modal.revisionId} · {modal.createdAt} · {modal.source}
+              </p>
+              <div className="report-markdown">
+                {modal.markdown.trim() ? (
+                  <Streamdown plugins={paperPlugins}>
+                    {modal.markdown}
+                  </Streamdown>
+                ) : (
+                  <p className="text-sm text-[#8ba2c7]">该版本内容为空。</p>
+                )}
+              </div>
             </div>
           ) : (
             <>

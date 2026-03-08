@@ -1,7 +1,7 @@
 "use client";
 
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import type { Editor, JSONContent } from "@tiptap/core";
 import { Extension } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -11,17 +11,21 @@ import StarterKit from "@tiptap/starter-kit";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  extractNoteLinks,
   fallbackMarkdownFromJson,
   hasNoteReferenceNode,
+  normalizeMarkdownDisplayMathBlocks,
 } from "@/components/note/note-utils";
 import { NoteReference } from "@/components/note/referenceExtensions";
 import {
   getNoteDetail,
   getNoteHistory,
   getNoteLinkedContext,
+  getNoteRevisionDetail,
+  getNoteRevisions,
   type NoteLinkedContext,
   type NoteRefType,
+  type NoteRevisionListItem,
+  restoreNoteRevision,
   searchNotePapers,
   searchNoteWorkReports,
   updateNoteContent,
@@ -35,6 +39,7 @@ import { createSlashCommands } from "./commands";
 import { DetailModal } from "./DetailModal";
 import { InlineDisplayMathematics } from "./inlineDisplayMathematics";
 import { LinkedSidebar } from "./LinkedSidebar";
+import { RevisionHistoryPanel } from "./RevisionHistoryPanel";
 import { SlashMenu } from "./SlashMenu";
 import { TargetPicker } from "./TargetPicker";
 import type {
@@ -55,7 +60,7 @@ import {
   statusLabel,
 } from "./utils";
 
-const DEBOUNCE_MS = 1200;
+const DEBOUNCE_MS = 5000;
 const PICKER_DEBOUNCE_MS = 240;
 
 const ListBehaviorShortcuts = Extension.create({
@@ -103,13 +108,271 @@ type NoteDraftSnapshot = {
   updatedAt: number;
 };
 
+function parseSqliteTimestamp(value: string): number | null {
+  const matched = value.match(
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/,
+  );
+  if (!matched) {
+    return null;
+  }
+  const [, y, m, d, hh, mm, ss, msRaw] = matched;
+  const ms = Number((msRaw ?? "0").padEnd(3, "0"));
+  const parsed = Date.UTC(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(hh),
+    Number(mm),
+    Number(ss),
+    ms,
+  );
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function computeSnapshotHash(title: string, content: string): string {
+  let hash = BigInt("0xcbf29ce484222325");
+  const prime = BigInt("0x100000001b3");
+  const input = `${title}\n${content}`;
+  const encoded = new TextEncoder().encode(input);
+  for (const byte of encoded) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & BigInt("0xffffffffffffffff");
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+const NOTE_REFERENCE_TOKEN =
+  /\[\[\s*(paper|task|note|work_report)\s*:\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]/giu;
+
+function emptyDoc(): JSONContent {
+  return { type: "doc", content: [{ type: "paragraph" }] };
+}
+
+function isValidImportedRefId(refType: NoteRefType, refId: string): boolean {
+  if (refType === "paper") {
+    return refId.trim().length > 0;
+  }
+  if (refType === "task" || refType === "note") {
+    return /^\d+$/.test(refId);
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(refId);
+}
+
+function textNodeWithMarks(
+  text: string,
+  marks: unknown[] | undefined,
+): JSONContent | null {
+  if (!text) {
+    return null;
+  }
+  const node: JSONContent = { type: "text", text };
+  if (Array.isArray(marks) && marks.length > 0) {
+    (node as { marks?: unknown[] }).marks = marks;
+  }
+  return node;
+}
+
+function splitTextNodeByReferenceToken(
+  node: JSONContent,
+  inLiteral: boolean,
+): JSONContent[] {
+  if (inLiteral || node.type !== "text") {
+    return [node];
+  }
+  const sourceText = node.text ?? "";
+  if (!sourceText.includes("[[")) {
+    return [node];
+  }
+  const marks = (node as { marks?: unknown[] }).marks;
+  const result: JSONContent[] = [];
+  let cursor = 0;
+  NOTE_REFERENCE_TOKEN.lastIndex = 0;
+  for (const match of sourceText.matchAll(NOTE_REFERENCE_TOKEN)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const prefix = textNodeWithMarks(sourceText.slice(cursor, start), marks);
+    if (prefix) {
+      result.push(prefix);
+    }
+
+    const rawType = (match[1] ?? "").toLowerCase();
+    const refType = rawType as NoteRefType;
+    const refId = (match[2] ?? "").trim();
+    const label = (match[3] ?? refId).trim() || refId;
+    if (
+      (refType === "paper" ||
+        refType === "task" ||
+        refType === "note" ||
+        refType === "work_report") &&
+      isValidImportedRefId(refType, refId)
+    ) {
+      result.push({
+        type: "noteReference",
+        attrs: {
+          refType,
+          refId,
+          label,
+        },
+      });
+    } else {
+      const fallback = textNodeWithMarks(match[0], marks);
+      if (fallback) {
+        result.push(fallback);
+      }
+    }
+    cursor = end;
+  }
+  const suffix = textNodeWithMarks(sourceText.slice(cursor), marks);
+  if (suffix) {
+    result.push(suffix);
+  }
+  return result.length === 0 ? [node] : result;
+}
+
+function transformMarkdownReferenceTokens(
+  node: JSONContent | null | undefined,
+  inLiteral = false,
+): JSONContent[] {
+  if (!node) {
+    return [];
+  }
+  if (node.type === "text") {
+    return splitTextNodeByReferenceToken(node, inLiteral);
+  }
+
+  const nextLiteral =
+    inLiteral ||
+    node.type === "codeBlock" ||
+    node.type === "mathematics" ||
+    node.type === "mathDisplay" ||
+    node.type === "displayMath" ||
+    node.type === "mathInline" ||
+    node.type === "inlineMath";
+
+  if (!Array.isArray(node.content)) {
+    return [node];
+  }
+  const nextChildren: JSONContent[] = [];
+  for (const child of node.content) {
+    nextChildren.push(
+      ...transformMarkdownReferenceTokens(child as JSONContent, nextLiteral),
+    );
+  }
+  return [{ ...node, content: nextChildren }];
+}
+
+function ensureDocRoot(node: JSONContent): JSONContent {
+  if (node.type === "doc") {
+    return node;
+  }
+  return {
+    type: "doc",
+    content: [node],
+  };
+}
+
+function parseMarkdownToEditorDoc(
+  editor: Editor,
+  markdown: string,
+): JSONContent {
+  const content = markdown.trim();
+  if (!content) {
+    return emptyDoc();
+  }
+  const parsed = editor.markdown?.parse(content);
+  if (!parsed || typeof parsed !== "object") {
+    return emptyDoc();
+  }
+  const transformed = transformMarkdownReferenceTokens(
+    parsed as JSONContent,
+  )[0];
+  if (!transformed) {
+    return emptyDoc();
+  }
+  const normalized = normalizeLegacyMathNodes(ensureDocRoot(transformed))[0];
+  return normalized ?? emptyDoc();
+}
+
+function deriveTitleFromPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, "/");
+  const filename = normalized.split("/").pop() ?? "";
+  const stem = filename.replace(/\.[^./\\]+$/, "").trim();
+  return stem || null;
+}
+
+function noteContentJsonToMarkdown(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object") {
+      return trimmed;
+    }
+    const markdown = fallbackMarkdownFromJson(parsed as JSONContent).trim();
+    return normalizeMarkdownDisplayMathBlocks(markdown || trimmed);
+  } catch {
+    return normalizeMarkdownDisplayMathBlocks(trimmed);
+  }
+}
+
+function docHasMeaningfulContent(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const node = value as {
+    type?: string;
+    text?: string;
+    attrs?: Record<string, unknown>;
+    content?: unknown[];
+  };
+  if (node.type === "text") {
+    return Boolean(node.text?.trim());
+  }
+  if (node.type === "noteReference" || node.type === "image") {
+    return true;
+  }
+  if (node.attrs && typeof node.attrs === "object") {
+    const attrs = node.attrs;
+    for (const key of ["latex", "value", "text", "src"]) {
+      const raw = attrs[key];
+      if (typeof raw === "string" && raw.trim()) {
+        return true;
+      }
+    }
+  }
+  if (!Array.isArray(node.content)) {
+    return false;
+  }
+  return node.content.some((child) => docHasMeaningfulContent(child));
+}
+
+function isEffectivelyEmptyDoc(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as { type?: string };
+    if (!parsed || parsed.type !== "doc") {
+      return false;
+    }
+    return !docHasMeaningfulContent(parsed);
+  } catch {
+    return false;
+  }
+}
+
 export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const [title, setTitle] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
+  const [storedUpdatedAt, setStoredUpdatedAt] = useState<string | null>(null);
+  const [showConflictDiff, setShowConflictDiff] = useState(false);
+  const [conflictStoredVersion, setConflictStoredVersion] = useState<{
+    title: string;
+    content: string;
+  } | null>(null);
+  const [historyVisible, setHistoryVisible] = useState(false);
 
   const [context, setContext] = useState<NoteLinkedContext>({
     papers: [],
@@ -117,6 +380,15 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     notes: [],
     workReports: [],
   });
+  const [revisions, setRevisions] = useState<NoteRevisionListItem[]>([]);
+  const [revisionsLoading, setRevisionsLoading] = useState(false);
+  const [revisionError, setRevisionError] = useState<string | null>(null);
+  const [previewingRevisionId, setPreviewingRevisionId] = useState<
+    number | null
+  >(null);
+  const [restoringRevisionId, setRestoringRevisionId] = useState<number | null>(
+    null,
+  );
 
   const [modal, setModal] = useState<ModalState>(null);
   const [paperDetail, setPaperDetail] = useState<PaperReportDetail | null>(
@@ -138,7 +410,16 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const normalizingMathRef = useRef(false);
   const loadingSeqRef = useRef(0);
   const hydratingContentRef = useRef(false);
-  const pendingDirtyWhileSavingRef = useRef(false);
+  const saveStateRef = useRef<SaveState>("saved");
+  const titleRef = useRef("");
+  const storedUpdatedAtRef = useRef<string | null>(null);
+  const latestSnapshotHashRef = useRef<string>("");
+  const queuedSourceRef = useRef<
+    "autosave" | "shortcut" | "visibility" | "restore" | "manual" | null
+  >(null);
+  const conflictLockRef = useRef(false);
+  const saveSeqRef = useRef(0);
+  const activeSaveSeqRef = useRef<number | null>(null);
   const focusModeRef = useRef(false);
   const centerLineRafRef = useRef<number | null>(null);
   const draftStorageKey = useMemo(
@@ -207,6 +488,41 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       // no-op: context panel should not block editing
     }
   }, [noteId]);
+
+  const refreshRevisions = useCallback(
+    async (force = false) => {
+      if (!noteId || (!historyVisible && !force)) {
+        return;
+      }
+      setRevisionsLoading(true);
+      setRevisionError(null);
+      try {
+        const response = await getNoteRevisions(noteId, 1, 30);
+        setRevisions(response.items);
+      } catch (loadError) {
+        setRevisionError(
+          loadError instanceof Error ? loadError.message : String(loadError),
+        );
+      } finally {
+        setRevisionsLoading(false);
+      }
+    },
+    [historyVisible, noteId],
+  );
+
+  const toggleHistoryVisible = useCallback(() => {
+    setHistoryVisible((current) => {
+      const nextVisible = !current;
+      if (nextVisible) {
+        void refreshRevisions(true);
+      }
+      return nextVisible;
+    });
+  }, [refreshRevisions]);
+
+  const closeHistoryPanel = useCallback(() => {
+    setHistoryVisible(false);
+  }, []);
 
   const slashCommands = useMemo(() => createSlashCommands(), []);
 
@@ -321,14 +637,18 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         return;
       }
 
-      setSaveState((current) => {
-        if (current === "saving") {
-          pendingDirtyWhileSavingRef.current = true;
-          return current;
-        }
-        return "dirty";
-      });
-      persistDraft(title, activeEditor.getJSON() as JSONContent);
+      const content = JSON.stringify(activeEditor.getJSON());
+      const nextHash = computeSnapshotHash(
+        titleRef.current.trim() || "未命名笔记",
+        content,
+      );
+      latestSnapshotHashRef.current = nextHash;
+      if (activeSaveSeqRef.current !== null) {
+        queuedSourceRef.current = "autosave";
+      } else {
+        setSaveState("dirty");
+      }
+      persistDraft(titleRef.current, activeEditor.getJSON() as JSONContent);
       syncSlashTrigger(activeEditor);
       if (focusModeRef.current) {
         if (centerLineRafRef.current != null) {
@@ -389,7 +709,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         })
         .insertContent(" ")
         .run();
-      setSaveState("dirty");
+      setSaveState((current) => (current === "saving" ? current : "dirty"));
       closeTargetPicker();
     },
     [closeTargetPicker, editor, targetPicker.range],
@@ -423,44 +743,168 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     ],
   );
 
-  const saveNow = useCallback(async () => {
-    if (!editor || !noteId || !loaded) {
+  const buildCurrentSnapshot = useCallback(() => {
+    if (!editor) {
+      return null;
+    }
+    const json = editor.getJSON();
+    const normalizedTitle = titleRef.current.trim() || "未命名笔记";
+    const content = JSON.stringify(json);
+    const snapshotHash = computeSnapshotHash(normalizedTitle, content);
+    latestSnapshotHashRef.current = snapshotHash;
+    return {
+      json,
+      title: normalizedTitle,
+      content,
+      snapshotHash,
+    };
+  }, [editor]);
+
+  const saveNow = useCallback(
+    async (
+      source:
+        | "autosave"
+        | "shortcut"
+        | "visibility"
+        | "restore"
+        | "manual" = "manual",
+    ) => {
+      if (!noteId || !loaded) {
+        return;
+      }
+      if (conflictLockRef.current) {
+        if (source === "manual" || source === "shortcut") {
+          setNotice("检测到保存冲突，请先刷新页面或恢复历史版本后再保存。");
+        }
+        return;
+      }
+      const snapshot = buildCurrentSnapshot();
+      if (!snapshot) {
+        return;
+      }
+
+      if (activeSaveSeqRef.current !== null) {
+        queuedSourceRef.current = source;
+        return;
+      }
+
+      const seq = saveSeqRef.current + 1;
+      saveSeqRef.current = seq;
+      activeSaveSeqRef.current = seq;
+      setSaveState("saving");
+      setError(null);
+      setNotice(null);
+
+      try {
+        const response = await updateNoteContent(noteId, {
+          title: snapshot.title,
+          content: snapshot.content,
+          expectedUpdatedAt: storedUpdatedAtRef.current,
+          saveSource: source,
+        });
+        if (activeSaveSeqRef.current !== seq) {
+          return;
+        }
+
+        setTitle(response.detail.title);
+        titleRef.current = response.detail.title;
+        setStoredUpdatedAt(response.detail.updatedAt);
+        storedUpdatedAtRef.current = response.detail.updatedAt;
+        setConflictStoredVersion(null);
+        setShowConflictDiff(false);
+        conflictLockRef.current = false;
+
+        const isLatestSnapshot =
+          latestSnapshotHashRef.current === response.savedHash &&
+          queuedSourceRef.current === null;
+        if (isLatestSnapshot) {
+          setSaveState("saved");
+          clearDraft();
+        } else {
+          setSaveState("dirty");
+        }
+        if (response.skippedLinks.length > 0) {
+          setNotice(
+            `已保存，忽略 ${response.skippedLinks.length} 个失效引用（目标不存在）。`,
+          );
+        }
+
+        void refreshContext();
+        void refreshRevisions();
+      } catch (saveError) {
+        if (activeSaveSeqRef.current !== seq) {
+          return;
+        }
+        const message =
+          saveError instanceof Error ? saveError.message : String(saveError);
+        if (message.includes("modified by another save")) {
+          setSaveState("failed");
+          setError("检测到保存冲突，请刷新页面或恢复历史版本后再保存。");
+          setNotice("已暂停自动保存并锁定保存操作，等待你先处理冲突。");
+          conflictLockRef.current = true;
+          queuedSourceRef.current = null;
+          void (async () => {
+            try {
+              const storedNote = await getNoteDetail(noteId);
+              setStoredUpdatedAt(storedNote.updatedAt);
+              storedUpdatedAtRef.current = storedNote.updatedAt;
+              setConflictStoredVersion({
+                title: storedNote.title,
+                content: storedNote.content,
+              });
+            } catch {
+              setConflictStoredVersion(null);
+            }
+          })();
+        } else {
+          setSaveState("failed");
+          setError(message);
+        }
+      } finally {
+        if (activeSaveSeqRef.current === seq) {
+          activeSaveSeqRef.current = null;
+          if (queuedSourceRef.current !== null) {
+            setSaveState("dirty");
+          }
+        }
+      }
+    },
+    [
+      buildCurrentSnapshot,
+      clearDraft,
+      loaded,
+      noteId,
+      refreshContext,
+      refreshRevisions,
+    ],
+  );
+
+  useEffect(() => {
+    saveStateRef.current = saveState;
+  }, [saveState]);
+
+  useEffect(() => {
+    titleRef.current = title;
+  }, [title]);
+
+  useEffect(() => {
+    storedUpdatedAtRef.current = storedUpdatedAt;
+  }, [storedUpdatedAt]);
+
+  useEffect(() => {
+    if (!loaded) {
       return;
     }
-    pendingDirtyWhileSavingRef.current = false;
-    setSaveState("saving");
-    setError(null);
-    setNotice(null);
-    const json = editor.getJSON();
-    try {
-      const response = await updateNoteContent(noteId, {
-        title: title.trim() || "未命名笔记",
-        content: JSON.stringify(json),
-        expectedUpdatedAt: serverUpdatedAt,
-        links: extractNoteLinks(json),
-      });
-      setTitle(response.title);
-      setServerUpdatedAt(response.updatedAt);
-      setSaveState(pendingDirtyWhileSavingRef.current ? "dirty" : "saved");
-      pendingDirtyWhileSavingRef.current = false;
-      clearDraft();
-      await refreshContext();
-    } catch (saveError) {
-      pendingDirtyWhileSavingRef.current = false;
-      setSaveState("failed");
-      setError(
-        saveError instanceof Error ? saveError.message : String(saveError),
-      );
+    if (activeSaveSeqRef.current !== null) {
+      return;
     }
-  }, [
-    clearDraft,
-    editor,
-    loaded,
-    noteId,
-    refreshContext,
-    serverUpdatedAt,
-    title,
-  ]);
+    if (queuedSourceRef.current === null) {
+      return;
+    }
+    const queued = queuedSourceRef.current;
+    queuedSourceRef.current = null;
+    void saveNow(queued);
+  }, [loaded, saveNow]);
 
   useEffect(() => {
     focusModeRef.current = focusMode;
@@ -491,8 +935,17 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     setSaveState("saved");
     setError(null);
     setNotice(null);
-    setServerUpdatedAt(null);
+    setStoredUpdatedAt(null);
     setTitle("");
+    setConflictStoredVersion(null);
+    setShowConflictDiff(false);
+    setRevisions([]);
+    setRevisionError(null);
+    setPreviewingRevisionId(null);
+    activeSaveSeqRef.current = null;
+    queuedSourceRef.current = null;
+    conflictLockRef.current = false;
+    latestSnapshotHashRef.current = "";
     void (async () => {
       try {
         const detail = await getNoteDetail(noteId);
@@ -511,11 +964,18 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
                 typeof draft.updatedAt === "number" &&
                 typeof draft.content === "string"
               ) {
-                const remoteUpdatedAt = Date.parse(detail.updatedAt);
-                const remoteTs = Number.isNaN(remoteUpdatedAt)
-                  ? 0
-                  : remoteUpdatedAt;
-                if (draft.updatedAt > remoteTs + 1000) {
+                const storedTs = parseSqliteTimestamp(detail.updatedAt);
+                const draftLooksEmpty = isEffectivelyEmptyDoc(draft.content);
+                if (draftLooksEmpty) {
+                  try {
+                    window.localStorage.removeItem(draftStorageKey);
+                  } catch {
+                    // no-op
+                  }
+                } else if (
+                  storedTs != null &&
+                  draft.updatedAt > storedTs + 1000
+                ) {
                   targetTitle =
                     typeof draft.title === "string" && draft.title.trim()
                       ? draft.title
@@ -530,11 +990,17 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           }
         }
         setTitle(targetTitle);
-        setServerUpdatedAt(detail.updatedAt);
+        titleRef.current = targetTitle;
+        setStoredUpdatedAt(detail.updatedAt);
+        storedUpdatedAtRef.current = detail.updatedAt;
         const parsed = safeJsonParse(targetContent) as JSONContent;
         const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
         hydratingContentRef.current = true;
         editor.commands.setContent(normalized);
+        latestSnapshotHashRef.current = computeSnapshotHash(
+          targetTitle.trim() || "未命名笔记",
+          targetContent,
+        );
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
         }
@@ -552,27 +1018,67 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       }
       if (loadingSeqRef.current === currentLoadSeq) {
         await refreshContext();
+        await refreshRevisions();
       }
     })();
-  }, [draftStorageKey, editor, noteId, refreshContext]);
+  }, [draftStorageKey, editor, noteId, refreshContext, refreshRevisions]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        void saveNow();
+      if (
+        document.visibilityState === "hidden" &&
+        saveStateRef.current === "dirty"
+      ) {
+        const snapshot = buildCurrentSnapshot();
+        if (snapshot) {
+          persistDraft(titleRef.current, snapshot.json as JSONContent);
+        }
+        void saveNow("visibility");
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () =>
       document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [saveNow]);
+  }, [buildCurrentSnapshot, persistDraft, saveNow]);
 
   useEffect(() => {
-    if (saveState !== "dirty") {
+    const onPageHide = () => {
+      if (saveStateRef.current === "saved") {
+        return;
+      }
+      const snapshot = buildCurrentSnapshot();
+      if (!snapshot) {
+        return;
+      }
+      persistDraft(titleRef.current, snapshot.json as JSONContent);
+      void saveNow("visibility");
+    };
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (saveStateRef.current === "saved") {
+        return;
+      }
+      const snapshot = buildCurrentSnapshot();
+      if (snapshot) {
+        persistDraft(titleRef.current, snapshot.json as JSONContent);
+      }
+      void saveNow("visibility");
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [buildCurrentSnapshot, persistDraft, saveNow]);
+
+  useEffect(() => {
+    if (saveState !== "dirty" || conflictLockRef.current) {
       return;
     }
     const timer = window.setTimeout(() => {
-      void saveNow();
+      void saveNow("autosave");
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [saveNow, saveState]);
@@ -676,7 +1182,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        void saveNow();
+        if (saveStateRef.current !== "saved") {
+          void saveNow("shortcut");
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -771,6 +1279,99 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     })();
   }, [modal]);
 
+  const importMarkdown = useCallback(() => {
+    void (async () => {
+      setError(null);
+      setNotice(null);
+      if (!editor) {
+        setError("编辑器尚未就绪，暂时无法导入。");
+        return;
+      }
+      const selectedPath = await open({
+        title: "导入 Markdown",
+        multiple: false,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      const targetPath = Array.isArray(selectedPath)
+        ? selectedPath[0]
+        : selectedPath;
+      if (!targetPath || typeof targetPath !== "string") {
+        return;
+      }
+      try {
+        const markdown = await readTextFile(targetPath);
+        const importedDoc = parseMarkdownToEditorDoc(editor, markdown);
+        const currentTitle = titleRef.current.trim();
+        const suggestedTitle = deriveTitleFromPath(targetPath);
+        const shouldReplaceTitle =
+          !currentTitle || /^未命名笔记(?: \d+)?$/.test(currentTitle);
+        const nextTitle = shouldReplaceTitle
+          ? (suggestedTitle ?? titleRef.current)
+          : titleRef.current;
+        if (nextTitle !== titleRef.current) {
+          setTitle(nextTitle);
+          titleRef.current = nextTitle;
+        }
+
+        hydratingContentRef.current = true;
+        editor.commands.setContent(importedDoc);
+        const serialized = JSON.stringify(importedDoc);
+        latestSnapshotHashRef.current = computeSnapshotHash(
+          nextTitle.trim() || "未命名笔记",
+          serialized,
+        );
+        persistDraft(nextTitle, importedDoc);
+        if (activeSaveSeqRef.current !== null) {
+          queuedSourceRef.current = "manual";
+        }
+        if (conflictLockRef.current) {
+          setNotice(
+            "Markdown 已导入并写入本地草稿，但当前处于冲突锁定状态，请先处理冲突。",
+          );
+          return;
+        }
+        setSaveState("dirty");
+        setNotice("Markdown 已导入，等待保存。");
+      } catch (importError) {
+        setError(
+          importError instanceof Error
+            ? importError.message
+            : String(importError),
+        );
+      }
+    })();
+  }, [editor, persistDraft]);
+
+  const previewRevision = useCallback(
+    async (revisionId: number) => {
+      if (!noteId) {
+        return;
+      }
+      setPreviewingRevisionId(revisionId);
+      setError(null);
+      setNotice(null);
+      try {
+        const detail = await getNoteRevisionDetail(noteId, revisionId);
+        setModal({
+          type: "revision",
+          revisionId: detail.revisionId,
+          source: detail.source,
+          createdAt: detail.createdAt,
+          markdown: noteContentJsonToMarkdown(detail.content),
+        });
+      } catch (previewError) {
+        setError(
+          previewError instanceof Error
+            ? previewError.message
+            : String(previewError),
+        );
+      } finally {
+        setPreviewingRevisionId(null);
+      }
+    },
+    [noteId],
+  );
+
   const downloadMarkdown = useCallback(() => {
     void (async () => {
       setError(null);
@@ -794,9 +1395,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         const generated = shouldPreferFallback
           ? ""
           : (editor.getMarkdown?.() ?? "");
-        const markdown = generated.trim()
-          ? generated
-          : fallbackMarkdownFromJson(json);
+        const markdown = normalizeMarkdownDisplayMathBlocks(
+          generated.trim() ? generated : fallbackMarkdownFromJson(json),
+        );
         await writeTextFile(targetPath, markdown);
         setNotice(`已导出到：${targetPath}`);
       } catch (saveError) {
@@ -806,6 +1407,69 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       }
     })();
   }, [editor, title]);
+
+  const restoreRevision = useCallback(
+    async (revisionId: number) => {
+      if (!noteId || !editor) {
+        return;
+      }
+      setRestoringRevisionId(revisionId);
+      setError(null);
+      setNotice(null);
+      try {
+        const response = await restoreNoteRevision(
+          noteId,
+          revisionId,
+          storedUpdatedAtRef.current,
+        );
+        setTitle(response.detail.title);
+        titleRef.current = response.detail.title;
+        setStoredUpdatedAt(response.detail.updatedAt);
+        storedUpdatedAtRef.current = response.detail.updatedAt;
+        const parsed = safeJsonParse(response.detail.content) as JSONContent;
+        const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
+        hydratingContentRef.current = true;
+        editor.commands.setContent(normalized);
+        latestSnapshotHashRef.current = response.savedHash;
+        queuedSourceRef.current = null;
+        activeSaveSeqRef.current = null;
+        conflictLockRef.current = false;
+        setSaveState("saved");
+        clearDraft();
+        setConflictStoredVersion(null);
+        setShowConflictDiff(false);
+        if (response.skippedLinks.length > 0) {
+          setNotice(
+            `已从历史版本恢复并保存，忽略 ${response.skippedLinks.length} 个失效引用。`,
+          );
+        } else {
+          setNotice("已从历史版本恢复并保存。");
+        }
+        await refreshContext();
+        await refreshRevisions();
+      } catch (restoreError) {
+        const message =
+          restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError);
+        setError(message);
+      } finally {
+        setRestoringRevisionId(null);
+      }
+    },
+    [clearDraft, editor, noteId, refreshContext, refreshRevisions],
+  );
+
+  const localDraftPreview = useMemo(() => {
+    if (!editor) {
+      return "";
+    }
+    try {
+      return JSON.stringify(editor.getJSON(), null, 2);
+    } catch {
+      return "";
+    }
+  }, [editor]);
 
   if (!noteId || Number.isNaN(noteId)) {
     return (
@@ -840,6 +1504,13 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={importMarkdown}
+              className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+            >
+              导入 Markdown
+            </button>
+            <button
+              type="button"
               onClick={downloadMarkdown}
               className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
             >
@@ -855,6 +1526,17 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
               }`}
             >
               {focusMode ? "退出专注模式" : "专注模式"}
+            </button>
+            <button
+              type="button"
+              onClick={toggleHistoryVisible}
+              className={`cursor-pointer rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
+                historyVisible
+                  ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
+                  : "border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+              }`}
+            >
+              {historyVisible ? "收起历史版本" : "查看历史版本"}
             </button>
           </div>
         </div>
@@ -880,11 +1562,23 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           <input
             value={title}
             onChange={(event) => {
-              setTitle(event.target.value);
+              const nextTitle = event.target.value;
+              setTitle(nextTitle);
+              titleRef.current = nextTitle;
               if (loaded) {
-                setSaveState("dirty");
                 if (editor) {
-                  persistDraft(event.target.value, editor.getJSON());
+                  const json = editor.getJSON();
+                  const content = JSON.stringify(json);
+                  latestSnapshotHashRef.current = computeSnapshotHash(
+                    nextTitle.trim() || "未命名笔记",
+                    content,
+                  );
+                  persistDraft(nextTitle, json);
+                }
+                if (activeSaveSeqRef.current !== null) {
+                  queuedSourceRef.current = "autosave";
+                } else {
+                  setSaveState("dirty");
                 }
               }
             }}
@@ -931,18 +1625,65 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           </div>
           {notice ? <p className="text-sm text-[#8ef3cf]">{notice}</p> : null}
           {error ? <p className="text-sm text-[#ff9fba]">{error}</p> : null}
+          {conflictStoredVersion ? (
+            <div className="rounded-2xl border border-[#5a2f3f] bg-[#23131a] p-3 text-xs text-[#ffd7e3]">
+              <div className="flex items-center justify-between gap-3">
+                <p>检测到保存冲突，可查看差异后选择刷新页面或恢复历史版本。</p>
+                <button
+                  type="button"
+                  onClick={() => setShowConflictDiff((current) => !current)}
+                  className="rounded-full border border-[#704153] px-3 py-1 font-semibold text-[#ffd7e3] hover:border-[#ff8fb0]"
+                >
+                  {showConflictDiff ? "收起差异" : "查看差异"}
+                </button>
+              </div>
+              {showConflictDiff ? (
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <div>
+                    <p className="mb-1 text-[11px] text-[#ffb4c9]">本地草稿</p>
+                    <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
+                      {localDraftPreview}
+                    </pre>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] text-[#ffb4c9]">
+                      数据库版本
+                    </p>
+                    <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
+                      {conflictStoredVersion.content}
+                    </pre>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </section>
 
-        <LinkedSidebar
-          context={context}
-          onOpenPaper={(paperId) => setModal({ type: "paper", paperId })}
-          onOpenTask={(taskId) => {
-            const task = context.tasks.find((item) => item.taskId === taskId);
-            if (task) {
-              setModal({ type: "task", task });
-            }
-          }}
-        />
+        <aside className="space-y-4">
+          <RevisionHistoryPanel
+            visible={historyVisible}
+            loading={revisionsLoading}
+            error={revisionError}
+            revisions={revisions}
+            previewingRevisionId={previewingRevisionId}
+            restoringRevisionId={restoringRevisionId}
+            onRefresh={() => void refreshRevisions(true)}
+            onClose={closeHistoryPanel}
+            onPreviewRevision={(revisionId) => void previewRevision(revisionId)}
+            onRestoreRevision={(revisionId) => void restoreRevision(revisionId)}
+          />
+
+          <LinkedSidebar
+            context={context}
+            onOpenPaper={(paperId) => setModal({ type: "paper", paperId })}
+            onOpenTask={(taskId) => {
+              const task = context.tasks.find((item) => item.taskId === taskId);
+              if (task) {
+                setModal({ type: "task", task });
+              }
+            }}
+          />
+        </aside>
       </div>
 
       <DetailModal

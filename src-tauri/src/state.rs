@@ -1,3 +1,4 @@
+use crate::db::ensure_note_storage_schema;
 use chrono::Local;
 use reqwest::Client;
 use sqlx::{
@@ -89,6 +90,7 @@ pub async fn init_state(app_handle: &AppHandle) -> Result<AppState, String> {
   let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
     .fetch_optional(&pool)
     .await;
+  ensure_note_storage_schema(&pool).await?;
 
   Ok(AppState {
     pool,

@@ -12,7 +12,8 @@ mod work_report;
 
 use notes::{
   create_note_item, delete_note_item, get_note_detail, get_note_history, get_note_linked_context,
-  search_note_papers, search_note_work_reports, update_note_content,
+  get_note_revision_detail, get_note_revisions, restore_note_revision, search_note_papers,
+  search_note_work_reports, update_note_content,
 };
 use paper_reading::{
   get_paper_report_detail, get_paper_report_history, start_paper_reading_workflow,
@@ -48,6 +49,12 @@ pub fn run() {
       version: 2,
       description: "wal_hardening",
       sql: include_str!("../resource/migrations/0002_wal_hardening.sql"),
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 3,
+      description: "note_revisions",
+      sql: include_str!("../resource/migrations/0003_note_revisions.sql"),
       kind: MigrationKind::Up,
     },
   ];
@@ -101,6 +108,9 @@ pub fn run() {
       delete_note_item,
       get_note_detail,
       update_note_content,
+      get_note_revisions,
+      get_note_revision_detail,
+      restore_note_revision,
       get_note_linked_context,
       search_note_papers,
       search_note_work_reports,

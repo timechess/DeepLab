@@ -6,13 +6,15 @@ use crate::{
   types::{
     BehaviorSnapshotComment, BehaviorSnapshotDto, BehaviorSnapshotNote, BehaviorSnapshotTask,
     NoteDetailDto, NoteLinkRefInput, NoteLinkedContextDto, NoteListItemDto, NotePaperLinkDto,
-    NotePaperOptionDto, NoteRefNoteDto, NoteTaskLinkDto, NoteWorkReportLinkDto,
-    NoteWorkReportOptionDto, PaperCardDto, PaperDecision, PaperRecommendationResult,
-    PaperReportDetailDto, PaperReportListItemDto, PersistPaper, RuleDto, RuntimeSettingDto,
-    RuntimeSettingRow, RuntimeSettingUpsertInput, TaskDto, WorkReportDeltaStats,
-    WorkReportDetailDto, WorkReportListItemDto, WorkflowListItem,
+    NotePaperOptionDto, NoteRefNoteDto, NoteRevisionDetailDto, NoteRevisionListItemDto,
+    NoteSaveResultDto, NoteTaskLinkDto, NoteWorkReportLinkDto, NoteWorkReportOptionDto,
+    PaperCardDto, PaperDecision, PaperRecommendationResult, PaperReportDetailDto,
+    PaperReportListItemDto, PersistPaper, RuleDto, RuntimeSettingDto, RuntimeSettingRow,
+    RuntimeSettingUpsertInput, TaskDto, WorkReportDeltaStats, WorkReportDetailDto,
+    WorkReportListItemDto, WorkflowListItem,
   },
 };
+use chrono::{Duration, NaiveDateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{HashMap, HashSet};
@@ -1546,6 +1548,53 @@ async fn get_rule_by_id(pool: &SqlitePool, id: i64) -> Result<RuleDto, String> {
   })
 }
 
+const NOTE_HISTORY_KEEP_FULL_HOURS: i64 = 24;
+const NOTE_HISTORY_KEEP_HOURLY_DAYS: i64 = 30;
+const NOTE_HISTORY_KEEP_DAILY_DAYS: i64 = 90;
+const NOTE_HISTORY_MAX_BYTES_PER_NOTE: i64 = 20 * 1024 * 1024;
+const NOTE_HISTORY_MAX_BYTES_TOTAL: i64 = 256 * 1024 * 1024;
+
+#[derive(Debug)]
+struct RevisionCompactRow {
+  id: i64,
+  source: String,
+  created_at: String,
+  snapshot_size: i64,
+}
+
+fn compute_content_hash(value: &str) -> String {
+  // Stable FNV-1a hash for snapshot identity across runs/platforms.
+  let mut hash: u64 = 0xcbf29ce484222325;
+  for byte in value.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(0x100000001b3);
+  }
+  format!("{hash:016x}")
+}
+
+fn build_snapshot_hash(title: &str, content: &str) -> String {
+  compute_content_hash(&format!("{title}\n{content}"))
+}
+
+fn normalize_source(source: &str) -> String {
+  let trimmed = source.trim().to_lowercase();
+  if trimmed.is_empty() {
+    return String::from("unknown");
+  }
+  match trimmed.as_str() {
+    "autosave" | "shortcut" | "visibility" | "restore" | "manual" | "create" | "unknown" => trimmed,
+    _ => String::from("unknown"),
+  }
+}
+
+fn parse_sqlite_datetime(value: &str) -> Option<NaiveDateTime> {
+  NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok()
+}
+
+fn is_key_revision_source(source: &str) -> bool {
+  matches!(source, "create" | "manual" | "shortcut" | "restore")
+}
+
 pub async fn list_note_history(
   pool: &SqlitePool,
   page: u32,
@@ -1619,14 +1668,41 @@ pub async fn list_note_history(
 pub async fn create_note(pool: &SqlitePool) -> Result<NoteDetailDto, String> {
   let title = next_untitled_note_title(pool).await?;
   let initial_content = String::from(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#);
-  let result = sqlx::query("INSERT INTO notes (title, content) VALUES (?1, ?2)")
+  let saved_hash = build_snapshot_hash(&title, &initial_content);
+  let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+  let result = sqlx::query("INSERT INTO notes (title, content, content_hash) VALUES (?1, ?2, ?3)")
     .bind(&title)
-    .bind(initial_content)
-    .execute(pool)
+    .bind(&initial_content)
+    .bind(&saved_hash)
+    .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
   let id = result.last_insert_rowid();
-  get_note_detail_by_id(pool, id).await
+  let row = sqlx::query("SELECT id, title, content, createdAt, updatedAt FROM notes WHERE id = ?1")
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+  let detail = NoteDetailDto {
+    id: row.try_get("id").map_err(|e| e.to_string())?,
+    title: row.try_get("title").map_err(|e| e.to_string())?,
+    content: row.try_get("content").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+  };
+  append_note_revision_tx(
+    &mut tx,
+    detail.id,
+    &detail.title,
+    &detail.content,
+    "create",
+    &detail.updated_at,
+  )
+  .await?;
+  compact_note_revisions_tx(&mut tx, detail.id).await?;
+  compact_global_note_revisions_tx(&mut tx).await?;
+  tx.commit().await.map_err(|e| e.to_string())?;
+  Ok(detail)
 }
 
 pub async fn delete_note(pool: &SqlitePool, id: i64) -> Result<(), String> {
@@ -1661,18 +1737,21 @@ pub async fn update_note_content_and_links(
   title: &str,
   content: &str,
   expected_updated_at: Option<&str>,
+  save_source: &str,
   links: &[NoteLinkRefInput],
-) -> Result<NoteDetailDto, String> {
-  ensure_note_links_schema(pool).await?;
+) -> Result<NoteSaveResultDto, String> {
+  let saved_hash = build_snapshot_hash(title, content);
+  let mut skipped_links = Vec::new();
   let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
   let result = if let Some(expected) = expected_updated_at {
     sqlx::query(
       "UPDATE notes
-      SET title = ?1, content = ?2, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
-      WHERE id = ?3 AND updatedAt = ?4",
+      SET title = ?1, content = ?2, content_hash = ?3, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
+      WHERE id = ?4 AND updatedAt = ?5",
     )
     .bind(title)
     .bind(content)
+    .bind(&saved_hash)
     .bind(id)
     .bind(expected)
     .execute(&mut *tx)
@@ -1681,11 +1760,12 @@ pub async fn update_note_content_and_links(
   } else {
     sqlx::query(
       "UPDATE notes
-      SET title = ?1, content = ?2, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
-      WHERE id = ?3",
+      SET title = ?1, content = ?2, content_hash = ?3, updatedAt = strftime('%Y-%m-%d %H:%M:%f', 'now')
+      WHERE id = ?4",
     )
     .bind(title)
     .bind(content)
+    .bind(&saved_hash)
     .bind(id)
     .execute(&mut *tx)
     .await
@@ -1723,6 +1803,16 @@ pub async fn update_note_content_and_links(
 
     match link.ref_type.as_str() {
       "paper" => {
+        let paper_exists = sqlx::query("SELECT 1 FROM papers WHERE id = ?1 LIMIT 1")
+          .bind(target)
+          .fetch_optional(&mut *tx)
+          .await
+          .map_err(|e| e.to_string())?
+          .is_some();
+        if !paper_exists {
+          skipped_links.push(format!("paper:{target}"));
+          continue;
+        }
         sqlx::query(
           "INSERT INTO note_links (note_id, link_type, target_paper_id) VALUES (?1, 'linked_paper', ?2)",
         )
@@ -1733,9 +1823,20 @@ pub async fn update_note_content_and_links(
         .map_err(|e| e.to_string())?;
       }
       "task" => {
-        let target_task_id: i64 = target
-          .parse()
-          .map_err(|_| String::from("invalid task link target"))?;
+        let Ok(target_task_id) = target.parse::<i64>() else {
+          skipped_links.push(format!("task:{target}"));
+          continue;
+        };
+        let task_exists = sqlx::query("SELECT 1 FROM tasks WHERE id = ?1 LIMIT 1")
+          .bind(target_task_id)
+          .fetch_optional(&mut *tx)
+          .await
+          .map_err(|e| e.to_string())?
+          .is_some();
+        if !task_exists {
+          skipped_links.push(format!("task:{target}"));
+          continue;
+        }
         sqlx::query(
           "INSERT INTO note_links (note_id, link_type, target_task_id) VALUES (?1, 'linked_task', ?2)",
         )
@@ -1746,10 +1847,22 @@ pub async fn update_note_content_and_links(
         .map_err(|e| e.to_string())?;
       }
       "note" => {
-        let target_note_id: i64 = target
-          .parse()
-          .map_err(|_| String::from("invalid note link target"))?;
+        let Ok(target_note_id) = target.parse::<i64>() else {
+          skipped_links.push(format!("note:{target}"));
+          continue;
+        };
         if target_note_id == id {
+          skipped_links.push(format!("note:{target}"));
+          continue;
+        }
+        let note_exists = sqlx::query("SELECT 1 FROM notes WHERE id = ?1 LIMIT 1")
+          .bind(target_note_id)
+          .fetch_optional(&mut *tx)
+          .await
+          .map_err(|e| e.to_string())?
+          .is_some();
+        if !note_exists {
+          skipped_links.push(format!("note:{target}"));
           continue;
         }
         sqlx::query(
@@ -1762,6 +1875,16 @@ pub async fn update_note_content_and_links(
         .map_err(|e| e.to_string())?;
       }
       "work_report" => {
+        let report_exists = sqlx::query("SELECT 1 FROM work_reports WHERE endDate = ?1 LIMIT 1")
+          .bind(target)
+          .fetch_optional(&mut *tx)
+          .await
+          .map_err(|e| e.to_string())?
+          .is_some();
+        if !report_exists {
+          skipped_links.push(format!("work_report:{target}"));
+          continue;
+        }
         sqlx::query(
           "INSERT INTO note_links (note_id, link_type, target_work_report_date) VALUES (?1, 'linked_work_report', ?2)",
         )
@@ -1775,15 +1898,407 @@ pub async fn update_note_content_and_links(
     }
   }
 
+  let row = sqlx::query("SELECT id, title, content, createdAt, updatedAt FROM notes WHERE id = ?1")
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+  let detail = NoteDetailDto {
+    id: row.try_get("id").map_err(|e| e.to_string())?,
+    title: row.try_get("title").map_err(|e| e.to_string())?,
+    content: row.try_get("content").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
+  };
+  let revision_id = append_note_revision_tx(
+    &mut tx,
+    detail.id,
+    &detail.title,
+    &detail.content,
+    save_source,
+    &detail.updated_at,
+  )
+  .await?;
+  compact_note_revisions_tx(&mut tx, id).await?;
+  compact_global_note_revisions_tx(&mut tx).await?;
   tx.commit().await.map_err(|e| e.to_string())?;
-  get_note_detail_by_id(pool, id).await
+
+  Ok(NoteSaveResultDto {
+    saved_at: detail.updated_at.clone(),
+    detail,
+    saved_hash,
+    revision_id,
+    skipped_links,
+  })
+}
+
+pub async fn list_note_revisions(
+  pool: &SqlitePool,
+  note_id: i64,
+  page: u32,
+  page_size: u32,
+) -> Result<(i64, Vec<NoteRevisionListItemDto>), String> {
+  let total_row = sqlx::query("SELECT COUNT(1) AS total FROM note_revisions WHERE note_id = ?1")
+    .bind(note_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  let total: i64 = total_row.try_get("total").map_err(|e| e.to_string())?;
+  let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+  let rows = sqlx::query(
+    "SELECT
+      id AS revision_id,
+      note_id,
+      source,
+      createdAt,
+      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size,
+      COALESCE(content_hash, '') AS content_hash
+    FROM note_revisions
+    WHERE note_id = ?1
+    ORDER BY id DESC
+    LIMIT ?2 OFFSET ?3",
+  )
+  .bind(note_id)
+  .bind(i64::from(page_size))
+  .bind(offset)
+  .fetch_all(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let items = rows
+    .iter()
+    .map(|row| -> Result<NoteRevisionListItemDto, String> {
+      Ok(NoteRevisionListItemDto {
+        revision_id: row.try_get("revision_id").map_err(|e| e.to_string())?,
+        note_id: row.try_get("note_id").map_err(|e| e.to_string())?,
+        source: row.try_get("source").map_err(|e| e.to_string())?,
+        created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+        snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
+        content_hash: row.try_get("content_hash").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+  Ok((total, items))
+}
+
+pub async fn get_note_revision_detail_by_id(
+  pool: &SqlitePool,
+  note_id: i64,
+  revision_id: i64,
+) -> Result<NoteRevisionDetailDto, String> {
+  let row = sqlx::query(
+    "SELECT
+      id AS revision_id,
+      note_id,
+      title,
+      content,
+      source,
+      createdAt,
+      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size,
+      COALESCE(content_hash, '') AS content_hash
+    FROM note_revisions
+    WHERE id = ?1 AND note_id = ?2",
+  )
+  .bind(revision_id)
+  .bind(note_id)
+  .fetch_optional(pool)
+  .await
+  .map_err(|e| e.to_string())?
+  .ok_or_else(|| String::from("note revision not found"))?;
+
+  Ok(NoteRevisionDetailDto {
+    revision_id: row.try_get("revision_id").map_err(|e| e.to_string())?,
+    note_id: row.try_get("note_id").map_err(|e| e.to_string())?,
+    title: row.try_get("title").map_err(|e| e.to_string())?,
+    content: row.try_get("content").map_err(|e| e.to_string())?,
+    source: row.try_get("source").map_err(|e| e.to_string())?,
+    created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+    snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
+    content_hash: row.try_get("content_hash").map_err(|e| e.to_string())?,
+  })
+}
+
+async fn append_note_revision_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+  note_id: i64,
+  title: &str,
+  content: &str,
+  source: &str,
+  created_at: &str,
+) -> Result<i64, String> {
+  let normalized_source = normalize_source(source);
+  let snapshot_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
+  let content_hash = build_snapshot_hash(title, content);
+  let latest_row = sqlx::query(
+    "SELECT id, title, COALESCE(content_hash, '') AS content_hash
+    FROM note_revisions
+    WHERE note_id = ?1
+    ORDER BY id DESC
+    LIMIT 1",
+  )
+  .bind(note_id)
+  .fetch_optional(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  if let Some(row) = latest_row {
+    let latest_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+    let latest_title: String = row.try_get("title").map_err(|e| e.to_string())?;
+    let latest_hash: String = row.try_get("content_hash").map_err(|e| e.to_string())?;
+    if !is_key_revision_source(&normalized_source)
+      && latest_hash == content_hash
+      && latest_title == title
+    {
+      return Ok(latest_id);
+    }
+  }
+
+  sqlx::query(
+    "INSERT INTO note_revisions (
+      note_id, title, content, content_length, source, createdAt, content_hash, snapshot_size
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+  )
+  .bind(note_id)
+  .bind(title)
+  .bind(content)
+  .bind(i64::try_from(content.chars().count()).unwrap_or(i64::MAX))
+  .bind(normalized_source)
+  .bind(created_at)
+  .bind(content_hash)
+  .bind(snapshot_size)
+  .execute(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  Ok(
+    sqlx::query("SELECT last_insert_rowid() AS revision_id")
+      .fetch_one(&mut **tx)
+      .await
+      .map_err(|e| e.to_string())?
+      .try_get("revision_id")
+      .map_err(|e| e.to_string())?,
+  )
+}
+
+async fn compact_note_revisions_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+  note_id: i64,
+) -> Result<(), String> {
+  let rows = sqlx::query(
+    "SELECT
+      id,
+      note_id,
+      source,
+      createdAt,
+      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size
+    FROM note_revisions
+    WHERE note_id = ?1
+    ORDER BY id DESC",
+  )
+  .bind(note_id)
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  if rows.is_empty() {
+    return Ok(());
+  }
+
+  let revisions = rows
+    .iter()
+    .map(|row| -> Result<RevisionCompactRow, String> {
+      Ok(RevisionCompactRow {
+        id: row.try_get("id").map_err(|e| e.to_string())?,
+        source: row.try_get("source").map_err(|e| e.to_string())?,
+        created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+        snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  let now = Utc::now().naive_utc();
+  let full_cutoff = now - Duration::hours(NOTE_HISTORY_KEEP_FULL_HOURS);
+  let hourly_cutoff = now - Duration::days(NOTE_HISTORY_KEEP_HOURLY_DAYS);
+  let daily_cutoff = now - Duration::days(NOTE_HISTORY_KEEP_DAILY_DAYS);
+
+  let mut keep = HashSet::<i64>::new();
+  let mut essential = HashSet::<i64>::new();
+  let mut hourly_seen = HashSet::<String>::new();
+  let mut daily_seen = HashSet::<String>::new();
+
+  if let Some(latest) = revisions.first() {
+    keep.insert(latest.id);
+    essential.insert(latest.id);
+  }
+  if let Some(oldest) = revisions.last() {
+    keep.insert(oldest.id);
+    essential.insert(oldest.id);
+  }
+
+  for row in &revisions {
+    let source = normalize_source(&row.source);
+    if is_key_revision_source(&source) {
+      keep.insert(row.id);
+      essential.insert(row.id);
+      continue;
+    }
+    let Some(created_at) = parse_sqlite_datetime(&row.created_at) else {
+      keep.insert(row.id);
+      continue;
+    };
+    if created_at >= full_cutoff {
+      keep.insert(row.id);
+      continue;
+    }
+    if created_at >= hourly_cutoff {
+      let bucket = created_at.format("%Y-%m-%d %H").to_string();
+      if hourly_seen.insert(bucket) {
+        keep.insert(row.id);
+      }
+      continue;
+    }
+    if created_at >= daily_cutoff {
+      let bucket = created_at.format("%Y-%m-%d").to_string();
+      if daily_seen.insert(bucket) {
+        keep.insert(row.id);
+      }
+    }
+  }
+
+  let mut kept_size = revisions
+    .iter()
+    .filter(|row| keep.contains(&row.id))
+    .map(|row| row.snapshot_size.max(0))
+    .sum::<i64>();
+
+  if kept_size > NOTE_HISTORY_MAX_BYTES_PER_NOTE {
+    for row in revisions.iter().rev() {
+      if kept_size <= NOTE_HISTORY_MAX_BYTES_PER_NOTE {
+        break;
+      }
+      if !keep.contains(&row.id) || essential.contains(&row.id) {
+        continue;
+      }
+      keep.remove(&row.id);
+      kept_size = kept_size.saturating_sub(row.snapshot_size.max(0));
+    }
+  }
+
+  let delete_ids = revisions
+    .iter()
+    .filter_map(|row| (!keep.contains(&row.id)).then_some(row.id))
+    .collect::<Vec<_>>();
+  delete_note_revisions_by_ids_tx(tx, &delete_ids).await
+}
+
+async fn compact_global_note_revisions_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<(), String> {
+  let rows = sqlx::query(
+    "SELECT
+      id,
+      note_id,
+      source,
+      createdAt,
+      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size
+    FROM note_revisions
+    ORDER BY createdAt ASC, id ASC",
+  )
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  if rows.is_empty() {
+    return Ok(());
+  }
+  let revisions = rows
+    .iter()
+    .map(|row| -> Result<RevisionCompactRow, String> {
+      Ok(RevisionCompactRow {
+        id: row.try_get("id").map_err(|e| e.to_string())?,
+        source: row.try_get("source").map_err(|e| e.to_string())?,
+        created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
+        snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
+      })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  let latest_rows = sqlx::query(
+    "SELECT note_id, MAX(id) AS revision_id
+    FROM note_revisions
+    GROUP BY note_id",
+  )
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  let oldest_rows = sqlx::query(
+    "SELECT note_id, MIN(id) AS revision_id
+    FROM note_revisions
+    GROUP BY note_id",
+  )
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let mut protected = HashSet::<i64>::new();
+  for row in latest_rows {
+    protected.insert(row.try_get("revision_id").map_err(|e| e.to_string())?);
+  }
+  for row in oldest_rows {
+    protected.insert(row.try_get("revision_id").map_err(|e| e.to_string())?);
+  }
+  for row in &revisions {
+    if is_key_revision_source(&normalize_source(&row.source)) {
+      protected.insert(row.id);
+    }
+  }
+
+  let mut total_size = revisions
+    .iter()
+    .map(|row| row.snapshot_size.max(0))
+    .sum::<i64>();
+  if total_size <= NOTE_HISTORY_MAX_BYTES_TOTAL {
+    return Ok(());
+  }
+
+  let mut delete_ids = Vec::new();
+  for row in &revisions {
+    if total_size <= NOTE_HISTORY_MAX_BYTES_TOTAL {
+      break;
+    }
+    if protected.contains(&row.id) {
+      continue;
+    }
+    delete_ids.push(row.id);
+    total_size = total_size.saturating_sub(row.snapshot_size.max(0));
+  }
+  delete_note_revisions_by_ids_tx(tx, &delete_ids).await
+}
+
+async fn delete_note_revisions_by_ids_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+  ids: &[i64],
+) -> Result<(), String> {
+  if ids.is_empty() {
+    return Ok(());
+  }
+  let mut qb: QueryBuilder<'_, Sqlite> =
+    QueryBuilder::new("DELETE FROM note_revisions WHERE id IN (");
+  {
+    let mut separated = qb.separated(", ");
+    for id in ids {
+      separated.push_bind(id);
+    }
+  }
+  qb.push(")");
+  qb.build()
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
 }
 
 pub async fn get_note_linked_context_by_id(
   pool: &SqlitePool,
   id: i64,
 ) -> Result<NoteLinkedContextDto, String> {
-  ensure_note_links_schema(pool).await?;
   let paper_rows = sqlx::query(
     "SELECT p.id AS paper_id, p.title, EXISTS (SELECT 1 FROM paper_reports pr WHERE pr.paper_id = p.id) AS has_report
     FROM note_links nl
@@ -1809,11 +2324,19 @@ pub async fn get_note_linked_context_by_id(
   .map_err(|e| e.to_string())?;
 
   let note_rows = sqlx::query(
-    "SELECT n.id AS note_id, n.title, n.updatedAt
-    FROM note_links nl
-    INNER JOIN notes n ON n.id = nl.target_note_id
-    WHERE nl.note_id = ?1 AND nl.link_type = 'linked_note'
-    ORDER BY n.updatedAt DESC, n.id DESC",
+    "SELECT note_id, title, updatedAt
+    FROM (
+      SELECT n.id AS note_id, n.title, n.updatedAt
+      FROM note_links nl
+      INNER JOIN notes n ON n.id = nl.target_note_id
+      WHERE nl.note_id = ?1 AND nl.link_type = 'linked_note'
+      UNION
+      SELECT n.id AS note_id, n.title, n.updatedAt
+      FROM note_links nl
+      INNER JOIN notes n ON n.id = nl.note_id
+      WHERE nl.target_note_id = ?1 AND nl.link_type = 'linked_note' AND nl.note_id <> ?1
+    )
+    ORDER BY updatedAt DESC, note_id DESC",
   )
   .bind(id)
   .fetch_all(pool)
@@ -2018,6 +2541,12 @@ async fn next_untitled_note_title(pool: &SqlitePool) -> Result<String, String> {
   Ok(format!("未命名笔记 {current}"))
 }
 
+pub async fn ensure_note_storage_schema(pool: &SqlitePool) -> Result<(), String> {
+  ensure_note_links_schema(pool).await?;
+  ensure_note_revisions_schema(pool).await?;
+  Ok(())
+}
+
 async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
   sqlx::query(
     "CREATE TABLE IF NOT EXISTS note_links (
@@ -2066,5 +2595,101 @@ async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE INDEX IF NOT EXISTS idx_note_links_target_note_id ON note_links (target_note_id)")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
   Ok(())
+}
+
+async fn ensure_note_revisions_schema(pool: &SqlitePool) -> Result<(), String> {
+  sqlx::query(
+    "CREATE TABLE IF NOT EXISTS note_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_length INTEGER NOT NULL,
+      source TEXT NOT NULL DEFAULT 'unknown',
+      createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      content_hash TEXT NOT NULL DEFAULT '',
+      snapshot_size INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE
+    )",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  ensure_note_save_hardening_columns(pool).await?;
+  sqlx::query(
+    "CREATE INDEX IF NOT EXISTS idx_note_revisions_note_id_desc ON note_revisions (note_id, id DESC)",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE INDEX IF NOT EXISTS idx_note_revisions_note_id ON note_revisions (note_id)")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query(
+    "CREATE INDEX IF NOT EXISTS idx_note_revisions_created_at ON note_revisions (createdAt)",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE INDEX IF NOT EXISTS idx_note_revisions_note_hash ON note_revisions (note_id, content_hash)")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+async fn ensure_note_save_hardening_columns(pool: &SqlitePool) -> Result<(), String> {
+  add_column_if_missing(
+    pool,
+    "ALTER TABLE notes ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+  )
+  .await?;
+  add_column_if_missing(
+    pool,
+    "ALTER TABLE note_revisions ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+  )
+  .await?;
+  add_column_if_missing(
+    pool,
+    "ALTER TABLE note_revisions ADD COLUMN snapshot_size INTEGER NOT NULL DEFAULT 0",
+  )
+  .await?;
+
+  sqlx::query("UPDATE notes SET content_hash = printf('%016x', id) WHERE COALESCE(content_hash, '') = ''")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("UPDATE note_revisions SET content_hash = printf('%016x', id) WHERE COALESCE(content_hash, '') = ''")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("UPDATE note_revisions SET snapshot_size = length(content) WHERE COALESCE(snapshot_size, 0) <= 0")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  sqlx::query("CREATE INDEX IF NOT EXISTS idx_notes_content_hash ON notes (content_hash)")
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+async fn add_column_if_missing(pool: &SqlitePool, sql: &str) -> Result<(), String> {
+  match sqlx::query(sql).execute(pool).await {
+    Ok(_) => Ok(()),
+    Err(error) => {
+      let message = error.to_string();
+      if message.contains("duplicate column name") {
+        Ok(())
+      } else {
+        Err(message)
+      }
+    }
+  }
 }

@@ -24,6 +24,41 @@ export interface NoteDetail {
   updatedAt: string;
 }
 
+export interface NoteSaveResult {
+  detail: NoteDetail;
+  savedHash: string;
+  revisionId: number;
+  savedAt: string;
+  skippedLinks: string[];
+}
+
+export interface NoteRevisionListItem {
+  revisionId: number;
+  noteId: number;
+  source: string;
+  createdAt: string;
+  snapshotSize: number;
+  contentHash: string;
+}
+
+export interface NoteRevisionResponse {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: NoteRevisionListItem[];
+}
+
+export interface NoteRevisionDetail {
+  revisionId: number;
+  noteId: number;
+  title: string;
+  content: string;
+  source: string;
+  createdAt: string;
+  snapshotSize: number;
+  contentHash: string;
+}
+
 export interface NoteLinkRefInput {
   refType: NoteRefType;
   refId: string;
@@ -34,7 +69,7 @@ export interface NoteUpsertInput {
   title: string;
   content: string;
   expectedUpdatedAt?: string | null;
-  links: NoteLinkRefInput[];
+  saveSource?: "autosave" | "shortcut" | "visibility" | "restore" | "manual";
 }
 
 export interface NotePaperLink {
@@ -110,8 +145,42 @@ export function getNoteDetail(id: number): Promise<NoteDetail> {
 export function updateNoteContent(
   id: number,
   input: NoteUpsertInput,
-): Promise<NoteDetail> {
-  return invoke<NoteDetail>("update_note_content", { id, input });
+): Promise<NoteSaveResult> {
+  return invoke<NoteSaveResult>("update_note_content", { id, input });
+}
+
+export function getNoteRevisions(
+  id: number,
+  page = 1,
+  pageSize = 20,
+): Promise<NoteRevisionResponse> {
+  return invoke<NoteRevisionResponse>("get_note_revisions", {
+    id,
+    page,
+    pageSize,
+  });
+}
+
+export function getNoteRevisionDetail(
+  id: number,
+  revisionId: number,
+): Promise<NoteRevisionDetail> {
+  return invoke<NoteRevisionDetail>("get_note_revision_detail", {
+    id,
+    revisionId,
+  });
+}
+
+export function restoreNoteRevision(
+  id: number,
+  revisionId: number,
+  expectedUpdatedAt?: string | null,
+): Promise<NoteSaveResult> {
+  return invoke<NoteSaveResult>("restore_note_revision", {
+    id,
+    revisionId,
+    expectedUpdatedAt: expectedUpdatedAt ?? null,
+  });
 }
 
 export function getNoteLinkedContext(id: number): Promise<NoteLinkedContext> {

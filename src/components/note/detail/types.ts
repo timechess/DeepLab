@@ -15,6 +15,13 @@ export interface PickerOption {
 export type ModalState =
   | { type: "paper"; paperId: string }
   | { type: "task"; task: NoteLinkedContext["tasks"][number] }
+  | {
+      type: "revision";
+      revisionId: number;
+      source: string;
+      createdAt: string;
+      markdown: string;
+    }
   | null;
 
 export type EditorPosition = {

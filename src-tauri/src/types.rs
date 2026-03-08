@@ -273,6 +273,49 @@ pub struct NoteDetailDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NoteSaveResultDto {
+  pub detail: NoteDetailDto,
+  pub saved_hash: String,
+  pub revision_id: i64,
+  pub saved_at: String,
+  pub skipped_links: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteRevisionListItemDto {
+  pub revision_id: i64,
+  pub note_id: i64,
+  pub source: String,
+  pub created_at: String,
+  pub snapshot_size: i64,
+  pub content_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteRevisionDetailDto {
+  pub revision_id: i64,
+  pub note_id: i64,
+  pub title: String,
+  pub content: String,
+  pub source: String,
+  pub created_at: String,
+  pub snapshot_size: i64,
+  pub content_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteRevisionResponse {
+  pub page: u32,
+  pub page_size: u32,
+  pub total: i64,
+  pub items: Vec<NoteRevisionListItemDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NotePaperLinkDto {
   pub paper_id: String,
   pub title: String,
@@ -349,7 +392,7 @@ pub struct NoteUpsertInput {
   #[serde(default)]
   pub expected_updated_at: Option<String>,
   #[serde(default)]
-  pub links: Vec<NoteLinkRefInput>,
+  pub save_source: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

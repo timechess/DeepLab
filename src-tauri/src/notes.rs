@@ -1,13 +1,14 @@
 use crate::{
   db::{
     create_note, delete_note, get_note_detail_by_id, get_note_linked_context_by_id,
-    list_note_history, search_note_paper_options, search_note_work_report_options,
-    update_note_content_and_links,
+    get_note_revision_detail_by_id, list_note_history, list_note_revisions,
+    search_note_paper_options, search_note_work_report_options, update_note_content_and_links,
   },
   state::AppState,
   types::{
     NoteDetailDto, NoteHistoryResponse, NoteLinkRefInput, NoteLinkedContextDto, NotePaperOptionDto,
-    NoteUpsertInput, NoteWorkReportOptionDto,
+    NoteRevisionDetailDto, NoteRevisionResponse, NoteSaveResultDto, NoteUpsertInput,
+    NoteWorkReportOptionDto,
   },
 };
 use serde_json::Value;
@@ -57,17 +58,75 @@ pub async fn update_note_content(
   state: State<'_, AppState>,
   id: i64,
   input: NoteUpsertInput,
-) -> Result<NoteDetailDto, String> {
-  let title = normalize_title(&input.title)?;
-  let content = normalize_content(&input.content)?;
-  let expected_updated_at = normalize_expected_updated_at(input.expected_updated_at);
-  let links = normalize_links(input.links);
+) -> Result<NoteSaveResultDto, String> {
+  let NoteUpsertInput {
+    title: raw_title,
+    content: raw_content,
+    expected_updated_at: raw_expected_updated_at,
+    save_source: raw_save_source,
+  } = input;
+  let title = normalize_title(&raw_title)?;
+  let content = normalize_content(&raw_content)?;
+  let expected_updated_at = normalize_expected_updated_at(raw_expected_updated_at);
+  let save_source = normalize_save_source(raw_save_source);
+  // Rebuild structured links from document content to keep note_links consistent with the actual snapshot.
+  let links = extract_links_from_note_content(&content)?;
   update_note_content_and_links(
     &state.pool,
     id,
     &title,
     &content,
     expected_updated_at.as_deref(),
+    save_source.as_deref().unwrap_or("unknown"),
+    &links,
+  )
+  .await
+}
+
+#[tauri::command]
+pub async fn get_note_revisions(
+  state: State<'_, AppState>,
+  id: i64,
+  page: Option<u32>,
+  page_size: Option<u32>,
+) -> Result<NoteRevisionResponse, String> {
+  let safe_page = page.unwrap_or(1).max(1);
+  let safe_page_size = page_size.unwrap_or(20).clamp(1, 100);
+  let (total, items) = list_note_revisions(&state.pool, id, safe_page, safe_page_size).await?;
+  Ok(NoteRevisionResponse {
+    page: safe_page,
+    page_size: safe_page_size,
+    total,
+    items,
+  })
+}
+
+#[tauri::command]
+pub async fn get_note_revision_detail(
+  state: State<'_, AppState>,
+  id: i64,
+  revision_id: i64,
+) -> Result<NoteRevisionDetailDto, String> {
+  get_note_revision_detail_by_id(&state.pool, id, revision_id).await
+}
+
+#[tauri::command]
+pub async fn restore_note_revision(
+  state: State<'_, AppState>,
+  id: i64,
+  revision_id: i64,
+  expected_updated_at: Option<String>,
+) -> Result<NoteSaveResultDto, String> {
+  let expected_updated_at = normalize_expected_updated_at(expected_updated_at);
+  let revision = get_note_revision_detail_by_id(&state.pool, id, revision_id).await?;
+  let links = extract_links_from_note_content(&revision.content)?;
+  update_note_content_and_links(
+    &state.pool,
+    id,
+    &revision.title,
+    &revision.content,
+    expected_updated_at.as_deref(),
+    "restore",
     &links,
   )
   .await
@@ -138,6 +197,19 @@ fn normalize_expected_updated_at(value: Option<String>) -> Option<String> {
       None
     } else {
       Some(trimmed.to_string())
+    }
+  })
+}
+
+fn normalize_save_source(value: Option<String>) -> Option<String> {
+  value.and_then(|raw| {
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() {
+      return None;
+    }
+    match trimmed.as_str() {
+      "autosave" | "shortcut" | "visibility" | "restore" | "manual" | "unknown" => Some(trimmed),
+      _ => Some(String::from("unknown")),
     }
   })
 }
@@ -243,6 +315,45 @@ fn normalize_links(links: Vec<NoteLinkRefInput>) -> Vec<NoteLinkRefInput> {
     }
   }
   out
+}
+
+fn extract_links_from_note_content(content: &str) -> Result<Vec<NoteLinkRefInput>, String> {
+  let value: Value =
+    serde_json::from_str(content).map_err(|_| String::from("note content is invalid JSON"))?;
+  let mut links = Vec::new();
+  walk_note_reference_node(&value, &mut links);
+  Ok(normalize_links(links))
+}
+
+fn walk_note_reference_node(node: &Value, out: &mut Vec<NoteLinkRefInput>) {
+  let Some(map) = node.as_object() else {
+    return;
+  };
+  if map.get("type").and_then(Value::as_str).unwrap_or("") == "noteReference" {
+    let Some(attrs) = map.get("attrs").and_then(Value::as_object) else {
+      return;
+    };
+    let Some(ref_type) = attrs.get("refType").and_then(Value::as_str) else {
+      return;
+    };
+    let Some(ref_id) = attrs.get("refId").and_then(Value::as_str) else {
+      return;
+    };
+    let label = attrs
+      .get("label")
+      .and_then(Value::as_str)
+      .map(ToString::to_string);
+    out.push(NoteLinkRefInput {
+      ref_type: ref_type.to_string(),
+      ref_id: Some(ref_id.to_string()),
+      label,
+    });
+  }
+  if let Some(children) = map.get("content").and_then(Value::as_array) {
+    for child in children {
+      walk_note_reference_node(child, out);
+    }
+  }
 }
 
 fn is_valid_date(value: &str) -> bool {
