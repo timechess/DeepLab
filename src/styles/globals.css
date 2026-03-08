@@ -402,7 +402,7 @@ pre {
 .note-editor .Tiptap-mathematics-render {
   display: inline-flex;
   align-items: center;
-  overflow-x: auto;
+  overflow: visible;
   max-width: 100%;
   vertical-align: middle;
   border: none;
@@ -416,6 +416,8 @@ pre {
 .note-editor .Tiptap-mathematics-render--display {
   display: block;
   width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
   text-align: center;
   margin: 0.8rem 0;
   padding: 0.2rem 0;
@@ -477,6 +479,8 @@ pre {
 }
 
 .note-editor .tiptap-mathematics-render[data-type="block-math"] {
+  overflow-x: auto;
+  overflow-y: hidden;
   margin: 0.8rem 0;
   padding: 0.2rem 0;
   border: none;
@@ -485,6 +489,7 @@ pre {
 }
 
 .note-editor .tiptap-mathematics-render[data-type="inline-math"] {
+  overflow: visible;
   border: none;
   background: transparent;
   box-shadow: none;
