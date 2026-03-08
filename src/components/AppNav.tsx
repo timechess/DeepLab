@@ -74,7 +74,8 @@ export function AppNav() {
               <div className="absolute top-[calc(100%+8px)] right-0 w-44 rounded-2xl border border-[#2d3a52] bg-[#0f1724] p-2 shadow-[0_16px_30px_rgba(0,0,0,0.45)]">
                 {MORE_NAV_ITEMS.map((item) => {
                   const active =
-                    pathname === item.href || pathname.startsWith(`${item.href}/`);
+                    pathname === item.href ||
+                    pathname.startsWith(`${item.href}/`);
                   return (
                     <Link
                       key={item.href}

@@ -35,6 +35,15 @@ export type InlineDisplayMathematicsOptions = {
 
 const DISPLAY_MATH_REGEX = /^\s*\$\$([\s\S]+?)\$\$\s*$/;
 const INLINE_MATH_REGEX = /(?<!\$)\$([^$\n]+)\$(?!\$)/g;
+const MATH_EDITOR_CLASS = "Tiptap-mathematics-editor";
+const MATH_EDITOR_HIDDEN_CLASS = "Tiptap-mathematics-editor--hidden";
+const MATH_PREVIEW_CLASS = "Tiptap-math-hover-preview";
+const MATH_PREVIEW_ERROR_CLASS = "Tiptap-math-hover-preview--error";
+
+type ActiveMathPreview = {
+  anchor: HTMLElement;
+  element: HTMLDivElement;
+};
 
 function detectMathMatches(text: string): MathMatch[] {
   if (!text) {
@@ -117,6 +126,55 @@ function getAffectedRange(
   };
 }
 
+function readPreviewPayload(anchor: HTMLElement): {
+  content: string;
+  displayMode: boolean;
+} | null {
+  const encoded = anchor.getAttribute("data-math-content");
+  const displayMode = anchor.getAttribute("data-math-display-mode");
+  if (!encoded || displayMode == null) {
+    return null;
+  }
+
+  try {
+    return {
+      content: decodeURIComponent(encoded),
+      displayMode: displayMode === "true",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function positionMathPreview(anchor: HTMLElement, preview: HTMLDivElement) {
+  const rect = anchor.getBoundingClientRect();
+  const viewportPadding = 10;
+  const spacing = 8;
+  const previewWidth = preview.offsetWidth;
+  const previewHeight = preview.offsetHeight;
+  const top = rect.top - previewHeight - spacing;
+  const targetRight = rect.right - previewWidth;
+  const fallbackTop = rect.bottom + spacing;
+  const left = Math.max(
+    viewportPadding,
+    Math.min(targetRight, window.innerWidth - previewWidth - viewportPadding),
+  );
+  const clampedTop =
+    top < viewportPadding
+      ? Math.min(
+          fallbackTop,
+          window.innerHeight - previewHeight - viewportPadding,
+        )
+      : Math.min(top, window.innerHeight - previewHeight - viewportPadding);
+
+  preview.style.top = `${Math.max(viewportPadding, clampedTop)}px`;
+  preview.style.left = `${left}px`;
+}
+
+function toMathSource(content: string, displayMode: boolean): string {
+  return displayMode ? `$$${content}$$` : `$${content}$`;
+}
+
 export const InlineDisplayMathematics =
   Extension.create<InlineDisplayMathematicsOptions>({
     name: "InlineDisplayMathematics",
@@ -134,6 +192,91 @@ export const InlineDisplayMathematics =
     addProseMirrorPlugins() {
       const { katexOptions, shouldRender } = this.options;
       const editor = this.editor;
+      let activeMathPreview: ActiveMathPreview | null = null;
+      let removeWindowListeners: (() => void) | null = null;
+
+      const hideMathPreview = () => {
+        if (activeMathPreview?.element.parentNode) {
+          activeMathPreview.element.parentNode.removeChild(
+            activeMathPreview.element,
+          );
+        }
+        activeMathPreview = null;
+        removeWindowListeners?.();
+        removeWindowListeners = null;
+      };
+
+      const renderPreviewContent = (
+        preview: HTMLDivElement,
+        payload: { content: string; displayMode: boolean },
+      ) => {
+        let content = preview.querySelector<HTMLDivElement>(
+          `.${MATH_PREVIEW_CLASS}-content`,
+        );
+        if (!content) {
+          content = document.createElement("div");
+          content.className = `${MATH_PREVIEW_CLASS}-content`;
+          preview.append(content);
+        }
+        content.textContent = "";
+        preview.classList.remove(MATH_PREVIEW_ERROR_CLASS);
+        try {
+          katex.render(payload.content, content, {
+            ...katexOptions,
+            displayMode: payload.displayMode,
+            throwOnError: true,
+          });
+        } catch {
+          preview.classList.add(MATH_PREVIEW_ERROR_CLASS);
+          content.textContent = toMathSource(
+            payload.content,
+            payload.displayMode,
+          );
+        }
+      };
+
+      const syncPreviewPosition = () => {
+        if (!activeMathPreview) {
+          return;
+        }
+        positionMathPreview(
+          activeMathPreview.anchor,
+          activeMathPreview.element,
+        );
+      };
+
+      const showMathPreview = (anchor: HTMLElement) => {
+        const payload = readPreviewPayload(anchor);
+        if (!payload) {
+          hideMathPreview();
+          return;
+        }
+
+        if (activeMathPreview?.anchor === anchor) {
+          renderPreviewContent(activeMathPreview.element, payload);
+          syncPreviewPosition();
+          return;
+        }
+
+        hideMathPreview();
+        const preview = document.createElement("div");
+        preview.className = MATH_PREVIEW_CLASS;
+        renderPreviewContent(preview, payload);
+        document.body.append(preview);
+        positionMathPreview(anchor, preview);
+
+        window.addEventListener("scroll", syncPreviewPosition, true);
+        window.addEventListener("resize", syncPreviewPosition);
+        removeWindowListeners = () => {
+          window.removeEventListener("scroll", syncPreviewPosition, true);
+          window.removeEventListener("resize", syncPreviewPosition);
+        };
+
+        activeMathPreview = {
+          anchor,
+          element: preview,
+        };
+      };
 
       return [
         new Plugin<MathematicsPluginState>({
@@ -215,12 +358,17 @@ export const InlineDisplayMathematics =
                         {
                           class:
                             isEditing && isEditable
-                              ? "Tiptap-mathematics-editor"
-                              : "Tiptap-mathematics-editor Tiptap-mathematics-editor--hidden",
+                              ? MATH_EDITOR_CLASS
+                              : `${MATH_EDITOR_CLASS} ${MATH_EDITOR_HIDDEN_CLASS}`,
                           style:
                             !isEditing || !isEditable
                               ? "display:inline-block;height:0;opacity:0;overflow:hidden;position:absolute;width:0;"
                               : undefined,
+                          "data-math-content": encodeURIComponent(
+                            match.content,
+                          ),
+                          "data-math-display-mode": String(match.displayMode),
+                          "data-math-active": String(isEditing && isEditable),
                         },
                         {
                           content: match.content,
@@ -290,6 +438,31 @@ export const InlineDisplayMathematics =
             decorations(state) {
               return this.getState(state)?.decorations ?? DecorationSet.empty;
             },
+          },
+          view(view) {
+            const updatePreviewForSelection = () => {
+              const activeAnchor = view.dom.querySelector(
+                `.${MATH_EDITOR_CLASS}[data-math-active="true"]`,
+              );
+              if (
+                !(activeAnchor instanceof HTMLElement) ||
+                activeAnchor.classList.contains(MATH_EDITOR_HIDDEN_CLASS)
+              ) {
+                hideMathPreview();
+                return;
+              }
+              showMathPreview(activeAnchor);
+            };
+
+            updatePreviewForSelection();
+            return {
+              update() {
+                updatePreviewForSelection();
+              },
+              destroy() {
+                hideMathPreview();
+              },
+            };
           },
         }),
       ];

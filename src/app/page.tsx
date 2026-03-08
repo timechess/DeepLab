@@ -24,9 +24,8 @@ import {
 } from "@/lib/workflow";
 
 export default function HomePage() {
-  const [paperData, setPaperData] = useState<TodayRecommendationResponse | null>(
-    null,
-  );
+  const [paperData, setPaperData] =
+    useState<TodayRecommendationResponse | null>(null);
   const [workReportData, setWorkReportData] =
     useState<WorkReportOverviewResponse | null>(null);
   const [workReportDetail, setWorkReportDetail] =
@@ -66,7 +65,9 @@ export default function HomePage() {
     }
     void (async () => {
       try {
-        const detail = await getWorkReportDetail(workReportData.reportId as number);
+        const detail = await getWorkReportDetail(
+          workReportData.reportId as number,
+        );
         setWorkReportDetail(detail);
       } catch {
         setWorkReportDetail(null);
@@ -92,7 +93,9 @@ export default function HomePage() {
     } catch (triggerError) {
       setTriggeringPaper(false);
       setError(
-        triggerError instanceof Error ? triggerError.message : String(triggerError),
+        triggerError instanceof Error
+          ? triggerError.message
+          : String(triggerError),
       );
     }
   }, []);
@@ -106,7 +109,9 @@ export default function HomePage() {
     } catch (triggerError) {
       setTriggeringWorkReport(false);
       setError(
-        triggerError instanceof Error ? triggerError.message : String(triggerError),
+        triggerError instanceof Error
+          ? triggerError.message
+          : String(triggerError),
       );
       await loadToday();
     }
@@ -115,7 +120,9 @@ export default function HomePage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-6 py-10">
       <header className="mb-10">
-        <p className="text-sm font-semibold tracking-[0.15em] text-[#8ba2c7]">DeepLab</p>
+        <p className="text-sm font-semibold tracking-[0.15em] text-[#8ba2c7]">
+          DeepLab
+        </p>
         <h1 className="mt-3 font-serif text-5xl leading-[0.92] font-semibold text-[#e5ecff]">
           今日 AI 论文推荐
         </h1>
@@ -137,7 +144,10 @@ export default function HomePage() {
       ) : null}
 
       {!loading && !error && paperData?.status === "none" ? (
-        <EmptyStateToday loading={triggeringPaper} onTrigger={handleTriggerPaper} />
+        <EmptyStateToday
+          loading={triggeringPaper}
+          onTrigger={handleTriggerPaper}
+        />
       ) : null}
 
       {!loading && !error && paperData?.status === "running" ? (
@@ -160,7 +170,10 @@ export default function HomePage() {
         <section className="rounded-3xl border border-[#6e2a45] bg-[#2a1020] p-8 text-[#ff9fba]">
           <p>今日工作流执行失败：{paperData.error ?? "未知错误"}</p>
           <div className="mt-4">
-            <EmptyStateToday loading={triggeringPaper} onTrigger={handleTriggerPaper} />
+            <EmptyStateToday
+              loading={triggeringPaper}
+              onTrigger={handleTriggerPaper}
+            />
           </div>
         </section>
       ) : null}
@@ -211,27 +224,39 @@ export default function HomePage() {
           <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <article className="rounded-xl border border-[#2d3a52] bg-[#111d31] p-3">
               <p className="text-xs text-[#8ba2c7]">新任务</p>
-              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">{workReportData.stats.newTasks}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">
+                {workReportData.stats.newTasks}
+              </p>
             </article>
             <article className="rounded-xl border border-[#2d3a52] bg-[#102524] p-3">
               <p className="text-xs text-[#8ba2c7]">新完成</p>
-              <p className="mt-1 text-2xl font-semibold text-[#9AF7C4]">{workReportData.stats.completedTasks}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#9AF7C4]">
+                {workReportData.stats.completedTasks}
+              </p>
             </article>
             <article className="rounded-xl border border-[#2d3a52] bg-[#111d31] p-3">
               <p className="text-xs text-[#8ba2c7]">新评论</p>
-              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">{workReportData.stats.newComments}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">
+                {workReportData.stats.newComments}
+              </p>
             </article>
             <article className="rounded-xl border border-[#2d3a52] bg-[#111d31] p-3">
               <p className="text-xs text-[#8ba2c7]">改评论</p>
-              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">{workReportData.stats.updatedComments}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">
+                {workReportData.stats.updatedComments}
+              </p>
             </article>
             <article className="rounded-xl border border-[#2d3a52] bg-[#111d31] p-3">
               <p className="text-xs text-[#8ba2c7]">新笔记</p>
-              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">{workReportData.stats.newNotes}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">
+                {workReportData.stats.newNotes}
+              </p>
             </article>
             <article className="rounded-xl border border-[#2d3a52] bg-[#111d31] p-3">
               <p className="text-xs text-[#8ba2c7]">改笔记</p>
-              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">{workReportData.stats.updatedNotes}</p>
+              <p className="mt-1 text-2xl font-semibold text-[#e5ecff]">
+                {workReportData.stats.updatedNotes}
+              </p>
             </article>
           </div>
 
@@ -253,15 +278,23 @@ export default function HomePage() {
               </Link>
             ) : null}
             {workReportData.blockReason ? (
-              <p className="text-sm text-[#9fb0d0]">{workReportData.blockReason}</p>
+              <p className="text-sm text-[#9fb0d0]">
+                {workReportData.blockReason}
+              </p>
             ) : null}
           </div>
 
           {workReportData.status === "ready" ? (
             <div className="report-markdown mt-6 rounded-2xl border border-[#1f2a3d] bg-[#101a2c] p-5">
-              <h3 className="font-serif text-2xl text-[#e5ecff]">今日日报内容</h3>
+              <h3 className="font-serif text-2xl text-[#e5ecff]">
+                今日日报内容
+              </h3>
               {workReportDetail?.report ? (
-                <Streamdown className="mt-4" parseIncompleteMarkdown={false} plugins={reportPlugins}>
+                <Streamdown
+                  className="mt-4"
+                  parseIncompleteMarkdown={false}
+                  plugins={reportPlugins}
+                >
                   {workReportDetail.report}
                 </Streamdown>
               ) : (

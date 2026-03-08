@@ -44,7 +44,9 @@ function WorkReportDetailPageContent() {
       setError(null);
     } catch (detailError) {
       setError(
-        detailError instanceof Error ? detailError.message : String(detailError),
+        detailError instanceof Error
+          ? detailError.message
+          : String(detailError),
       );
     } finally {
       setLoading(false);
@@ -81,7 +83,9 @@ function WorkReportDetailPageContent() {
         </h1>
       </header>
 
-      {loading ? <p className="text-sm text-[#8ba2c7]">正在加载详情...</p> : null}
+      {loading ? (
+        <p className="text-sm text-[#8ba2c7]">正在加载详情...</p>
+      ) : null}
       {error ? (
         <section className="mb-4 rounded-2xl border border-[#6e2a45] bg-[#2a1020] p-4 text-sm text-[#ff9fba]">
           {error}
@@ -91,7 +95,9 @@ function WorkReportDetailPageContent() {
       {detail ? (
         <>
           <section className="rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-5">
-            <h2 className="font-serif text-3xl font-semibold text-[#e5ecff]">{detail.endDate} 工作日报</h2>
+            <h2 className="font-serif text-3xl font-semibold text-[#e5ecff]">
+              {detail.endDate} 工作日报
+            </h2>
             <div className="mt-4 grid gap-3 text-sm text-[#c7d5ef] md:grid-cols-2">
               <p>
                 <span className="text-[#8ba2c7]">报告 ID：</span>
@@ -112,18 +118,34 @@ function WorkReportDetailPageContent() {
             </div>
 
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">新任务: {detail.statistics.newTasks}</p>
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">新完成: {detail.statistics.completedTasks}</p>
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">新评论: {detail.statistics.newComments}</p>
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">改评论: {detail.statistics.updatedComments}</p>
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">新笔记: {detail.statistics.newNotes}</p>
-              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">改笔记: {detail.statistics.updatedNotes}</p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                新任务: {detail.statistics.newTasks}
+              </p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                新完成: {detail.statistics.completedTasks}
+              </p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                新评论: {detail.statistics.newComments}
+              </p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                改评论: {detail.statistics.updatedComments}
+              </p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                新笔记: {detail.statistics.newNotes}
+              </p>
+              <p className="rounded-xl border border-[#2d3a52] bg-[#111d31] px-3 py-2 text-[#dbe6ff]">
+                改笔记: {detail.statistics.updatedNotes}
+              </p>
             </div>
           </section>
 
           <section className="report-markdown mt-6 max-w-none rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-6">
             <h3 className="font-serif text-2xl text-[#e5ecff]">工作日报正文</h3>
-            <Streamdown className="mt-4" parseIncompleteMarkdown={false} plugins={plugins}>
+            <Streamdown
+              className="mt-4"
+              parseIncompleteMarkdown={false}
+              plugins={plugins}
+            >
               {reportMarkdown}
             </Streamdown>
           </section>
@@ -135,7 +157,9 @@ function WorkReportDetailPageContent() {
 
 export default function WorkReportDetailPage() {
   return (
-    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+    <Suspense
+      fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}
+    >
       <WorkReportDetailPageContent />
     </Suspense>
   );

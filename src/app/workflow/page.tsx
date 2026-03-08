@@ -190,7 +190,9 @@ function WorkflowPageContent() {
 
 export default function WorkflowPage() {
   return (
-    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+    <Suspense
+      fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}
+    >
       <WorkflowPageContent />
     </Suspense>
   );

@@ -34,7 +34,11 @@ body {
       rgba(79, 125, 255, 0.14),
       transparent 40%
     ),
-    radial-gradient(circle at 85% 0%, rgba(14, 165, 233, 0.08), transparent 35%),
+    radial-gradient(
+      circle at 85% 0%,
+      rgba(14, 165, 233, 0.08),
+      transparent 35%
+    ),
     var(--color-bg);
   color: var(--color-text);
   font-family:
@@ -422,6 +426,54 @@ pre {
 
 .note-editor .Tiptap-mathematics-render .katex-display {
   margin: 0;
+}
+
+/* Fallback: keep KaTeX MathML accessibility layer visually hidden in note editor. */
+.note-editor .katex {
+  position: relative;
+}
+
+.note-editor .katex .katex-mathml {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.Tiptap-math-hover-preview {
+  position: fixed;
+  z-index: 80;
+  max-width: min(70vw, 520px);
+  border: 1px solid #2d3a52;
+  border-radius: 0.75rem;
+  background: #0b1424;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.45);
+  padding: 0.55rem 0.7rem;
+  color: #dbe6ff;
+  pointer-events: none;
+}
+
+.Tiptap-math-hover-preview-content {
+  overflow-x: auto;
+}
+
+.Tiptap-math-hover-preview--error {
+  border-color: #9e2f4f;
+  background: #25111a;
+  color: #ffb7cc;
+}
+
+.Tiptap-math-hover-preview--error .Tiptap-math-hover-preview-content {
+  font-family:
+    "Fira Code", "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular",
+    ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .note-editor .tiptap-mathematics-render[data-type="block-math"] {

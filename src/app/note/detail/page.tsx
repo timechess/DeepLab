@@ -13,7 +13,9 @@ function NoteDetailPageContent() {
 
 export default function NoteDetailPage() {
   return (
-    <Suspense fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}>
+    <Suspense
+      fallback={<main className="p-6 text-sm text-[#8ba2c7]">正在加载...</main>}
+    >
       <NoteDetailPageContent />
     </Suspense>
   );

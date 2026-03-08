@@ -11,7 +11,9 @@ export default function WorkReportPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<WorkReportHistoryResponse | null>(null);
+  const [history, setHistory] = useState<WorkReportHistoryResponse | null>(
+    null,
+  );
 
   const totalPages = useMemo(() => {
     if (!history || history.pageSize <= 0) {
@@ -52,8 +54,12 @@ export default function WorkReportPage() {
       </header>
 
       <section className="rounded-3xl border border-[#1f2a3d] bg-[#0f1724] p-5 shadow-[0_14px_40px_rgba(0,0,0,0.35)]">
-        {loading ? <p className="text-sm text-[#8ba2c7]">正在加载日报列表...</p> : null}
-        {!loading && error ? <p className="text-sm text-[#ff9fba]">{error}</p> : null}
+        {loading ? (
+          <p className="text-sm text-[#8ba2c7]">正在加载日报列表...</p>
+        ) : null}
+        {!loading && error ? (
+          <p className="text-sm text-[#ff9fba]">{error}</p>
+        ) : null}
 
         {!loading && !error ? (
           <>
@@ -96,7 +102,8 @@ export default function WorkReportPage() {
 
             <div className="mt-4 flex items-center justify-between">
               <p className="text-xs text-[#8ba2c7]">
-                第 {history?.page ?? page} / {totalPages} 页，共 {history?.total ?? 0} 条
+                第 {history?.page ?? page} / {totalPages} 页，共{" "}
+                {history?.total ?? 0} 条
               </p>
               <div className="flex gap-2">
                 <button
@@ -110,7 +117,9 @@ export default function WorkReportPage() {
                 <button
                   type="button"
                   disabled={page >= totalPages}
-                  onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                  onClick={() =>
+                    setPage((prev) => Math.min(totalPages, prev + 1))
+                  }
                   className="cursor-pointer rounded-full border border-[#1f2a3d] px-4 py-2 text-xs font-semibold text-[#c7d5ef] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   下一页

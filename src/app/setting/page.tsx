@@ -118,7 +118,9 @@ export default function SettingPage() {
       }
     } catch (updateError) {
       setError(
-        updateError instanceof Error ? updateError.message : String(updateError),
+        updateError instanceof Error
+          ? updateError.message
+          : String(updateError),
       );
     } finally {
       setCheckingUpdate(false);
@@ -268,11 +270,13 @@ export default function SettingPage() {
                 回退机制说明
               </p>
               <p className="mt-2 text-xs text-[#f7d08a]/90">
-                当未设置 Mistral OCR API Key 时，系统会自动下载 PDF 到本地临时目录并使用
+                当未设置 Mistral OCR API Key 时，系统会自动下载 PDF
+                到本地临时目录并使用
                 <code className="mx-1 rounded bg-[#201707] px-1 py-0.5 text-[11px]">
                   pdf-extract
                 </code>
-                提取文本。该回退机制可保障流程可用，但相比 Mistral OCR 报告质量可能下降。
+                提取文本。该回退机制可保障流程可用，但相比 Mistral OCR
+                报告质量可能下降。
               </p>
             </div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">

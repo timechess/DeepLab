@@ -562,7 +562,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       try {
         const json = editor.getJSON();
         const shouldPreferFallback = hasNoteReferenceNode(json);
-        const generated = shouldPreferFallback ? "" : editor.getMarkdown?.() ?? "";
+        const generated = shouldPreferFallback
+          ? ""
+          : (editor.getMarkdown?.() ?? "");
         const markdown = generated.trim()
           ? generated
           : fallbackMarkdownFromJson(json);
