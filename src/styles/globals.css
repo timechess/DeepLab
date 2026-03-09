@@ -34,11 +34,7 @@ body {
       rgba(79, 125, 255, 0.14),
       transparent 40%
     ),
-    radial-gradient(
-      circle at 85% 0%,
-      rgba(14, 165, 233, 0.08),
-      transparent 35%
-    ),
+    radial-gradient(circle at 85% 0%, rgba(14, 165, 233, 0.08), transparent 35%),
     var(--color-bg);
   color: var(--color-text);
   font-family:
@@ -573,5 +569,53 @@ pre {
 
 .note-slash-menu button.active,
 .note-slash-menu button:hover {
+  background: #142033;
+}
+
+.note-math-command-menu {
+  position: absolute;
+  z-index: 65;
+  min-width: 260px;
+  border: 1px solid #2d3a52;
+  border-radius: 0.8rem;
+  background: #0f1724;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
+  padding: 0.35rem;
+}
+
+.note-math-command-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border: 0;
+  background: transparent;
+  color: #dbe6ff;
+  text-align: left;
+  padding: 0.48rem 0.6rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-family:
+    "Fira Code", "JetBrains Mono", "Sarasa Mono SC", "SFMono-Regular",
+    ui-monospace, monospace;
+}
+
+.note-math-command-menu button span {
+  font-size: 0.77rem;
+  color: #dbe6ff;
+}
+
+.note-math-command-menu button em {
+  font-style: normal;
+  font-family:
+    var(--font-body), "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  font-size: 0.68rem;
+  color: #8ba2c7;
+}
+
+.note-math-command-menu button.active,
+.note-math-command-menu button:hover {
   background: #142033;
 }

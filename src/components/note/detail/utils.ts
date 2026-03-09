@@ -8,15 +8,84 @@ import type {
 } from "./types";
 
 export function safeJsonParse(input: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(input);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed as Record<string, unknown>;
+  const emptyDoc = { type: "doc", content: [{ type: "paragraph" }] };
+  const toTextDoc = (value: string) => ({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: value }],
+      },
+    ],
+  });
+  const safeStringify = (value: unknown): string => {
+    try {
+      const serialized = JSON.stringify(value);
+      return serialized ?? "";
+    } catch {
+      return String(value ?? "");
     }
-  } catch {
-    // no-op
+  };
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return emptyDoc;
   }
-  return { type: "doc", content: [{ type: "paragraph" }] };
+
+  let parsed: unknown = trimmed;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof parsed !== "string") {
+      break;
+    }
+    const candidate = parsed.trim();
+    if (!candidate) {
+      return emptyDoc;
+    }
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      parsed = candidate;
+      break;
+    }
+  }
+
+  if (Array.isArray(parsed)) {
+    const nodeLike = parsed.every((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      const nodeType = (item as { type?: unknown }).type;
+      return typeof nodeType === "string" && nodeType.trim().length > 0;
+    });
+    if (nodeLike) {
+      return { type: "doc", content: parsed as unknown[] };
+    }
+    const serialized = safeStringify(parsed);
+    return serialized.trim() ? toTextDoc(serialized) : emptyDoc;
+  }
+  if (typeof parsed === "object" && parsed !== null) {
+    const node = parsed as Record<string, unknown>;
+    const nodeType = node.type;
+    if (nodeType === "doc") {
+      return node;
+    }
+    if (typeof nodeType === "string" && nodeType.trim().length > 0) {
+      return { type: "doc", content: [node] };
+    }
+    const contentText =
+      typeof node.content === "string"
+        ? node.content
+        : typeof node.markdown === "string"
+          ? node.markdown
+          : typeof node.text === "string"
+            ? node.text
+            : safeStringify(node);
+    const normalizedText = contentText.trim();
+    return normalizedText ? toTextDoc(normalizedText) : emptyDoc;
+  }
+  if (typeof parsed === "string" && parsed.trim()) {
+    return toTextDoc(parsed);
+  }
+  return emptyDoc;
 }
 
 function textFromNode(node: JSONContent | null | undefined): string {
@@ -244,4 +313,42 @@ export function normalizeDisplayMathParagraphs(editor: Editor): boolean {
 
   editor.view.dispatch(tr);
   return true;
+}
+
+export function localPositionFromTextareaCaret(
+  textarea: HTMLTextAreaElement,
+  cursor: number,
+  container: HTMLDivElement | null,
+): EditorPosition {
+  const safeCursor = Math.max(0, Math.min(cursor, textarea.value.length));
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 16;
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  const resolvedLineHeight = Number.isFinite(lineHeight)
+    ? lineHeight
+    : fontSize * 1.5;
+  const textBeforeCursor = textarea.value.slice(0, safeCursor);
+  const lines = textBeforeCursor.split("\n");
+  const row = Math.max(0, lines.length - 1);
+  const column = [...(lines.at(-1) ?? "")].length;
+  const estimatedCharWidth = fontSize * 0.58;
+  const relativeTop =
+    textarea.offsetTop +
+    12 +
+    (row + 1) * resolvedLineHeight -
+    textarea.scrollTop;
+  const relativeLeft =
+    textarea.offsetLeft +
+    14 +
+    column * estimatedCharWidth -
+    textarea.scrollLeft;
+  const clampedTop = Math.max(relativeTop, textarea.offsetTop + 12);
+  const clampedLeft = Math.max(relativeLeft, textarea.offsetLeft + 12);
+  if (!container) {
+    return { top: clampedTop, left: clampedLeft };
+  }
+  return {
+    top: clampedTop + container.scrollTop,
+    left: clampedLeft + container.scrollLeft,
+  };
 }

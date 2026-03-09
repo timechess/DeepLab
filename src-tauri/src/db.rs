@@ -2289,9 +2289,7 @@ async fn latest_note_revision_id_tx(
   .await
   .map_err(|e| e.to_string())?;
   match row {
-    Some(record) => record
-      .try_get("revision_id")
-      .map_err(|e| e.to_string()),
+    Some(record) => record.try_get("revision_id").map_err(|e| e.to_string()),
     None => Ok(0),
   }
 }
@@ -2812,10 +2810,12 @@ async fn ensure_note_links_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-  sqlx::query("CREATE INDEX IF NOT EXISTS idx_note_links_target_note_id ON note_links (target_note_id)")
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+  sqlx::query(
+    "CREATE INDEX IF NOT EXISTS idx_note_links_target_note_id ON note_links (target_note_id)",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
   Ok(())
 }
 
@@ -2878,10 +2878,12 @@ async fn ensure_note_save_hardening_columns(pool: &SqlitePool) -> Result<(), Str
   )
   .await?;
 
-  sqlx::query("UPDATE notes SET content_hash = printf('%016x', id) WHERE COALESCE(content_hash, '') = ''")
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+  sqlx::query(
+    "UPDATE notes SET content_hash = printf('%016x', id) WHERE COALESCE(content_hash, '') = ''",
+  )
+  .execute(pool)
+  .await
+  .map_err(|e| e.to_string())?;
   sqlx::query("UPDATE note_revisions SET content_hash = printf('%016x', id) WHERE COALESCE(content_hash, '') = ''")
     .execute(pool)
     .await

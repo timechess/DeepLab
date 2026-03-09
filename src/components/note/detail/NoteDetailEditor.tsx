@@ -25,7 +25,6 @@ import {
   type NoteLinkedContext,
   type NoteRefType,
   type NoteRevisionListItem,
-  restoreNoteRevision,
   searchNotePapers,
   searchNoteWorkReports,
   updateNoteContent,
@@ -39,6 +38,7 @@ import { createSlashCommands } from "./commands";
 import { DetailModal } from "./DetailModal";
 import { InlineDisplayMathematics } from "./inlineDisplayMathematics";
 import { LinkedSidebar } from "./LinkedSidebar";
+import { MathInputAssist } from "./mathInputAssist";
 import { RevisionHistoryPanel } from "./RevisionHistoryPanel";
 import { SlashMenu } from "./SlashMenu";
 import { TargetPicker } from "./TargetPicker";
@@ -54,7 +54,6 @@ import {
   emptySlashMenuState,
   emptyTargetPickerState,
   localPositionFromEditor,
-  normalizeDisplayMathParagraphs,
   normalizeLegacyMathNodes,
   safeJsonParse,
   statusLabel,
@@ -305,16 +304,50 @@ function noteContentJsonToMarkdown(raw: string): string {
   if (!trimmed) {
     return "";
   }
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== "object") {
-      return trimmed;
+  let parsed: unknown = trimmed;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof parsed !== "string") {
+      break;
+    }
+    const candidate = parsed.trim();
+    if (!candidate) {
+      return "";
+    }
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      parsed = candidate;
+      break;
+    }
+  }
+  if (typeof parsed === "string") {
+    return normalizeMarkdownDisplayMathBlocks(parsed);
+  }
+  if (parsed && typeof parsed === "object") {
+    const asNode = parsed as {
+      type?: unknown;
+      content?: unknown;
+      markdown?: unknown;
+      text?: unknown;
+    };
+    if (
+      typeof asNode.type !== "string" ||
+      asNode.type.trim().length === 0
+    ) {
+      const fallbackText =
+        typeof asNode.content === "string"
+          ? asNode.content
+          : typeof asNode.markdown === "string"
+            ? asNode.markdown
+            : typeof asNode.text === "string"
+              ? asNode.text
+              : JSON.stringify(parsed);
+      return normalizeMarkdownDisplayMathBlocks(fallbackText || trimmed);
     }
     const markdown = fallbackMarkdownFromJson(parsed as JSONContent).trim();
     return normalizeMarkdownDisplayMathBlocks(markdown || trimmed);
-  } catch {
-    return normalizeMarkdownDisplayMathBlocks(trimmed);
   }
+  return normalizeMarkdownDisplayMathBlocks(trimmed);
 }
 
 function docHasMeaningfulContent(value: unknown): boolean {
@@ -407,7 +440,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
 
   const targetQueryInputRef = useRef<HTMLInputElement | null>(null);
   const editorSurfaceRef = useRef<HTMLDivElement | null>(null);
-  const normalizingMathRef = useRef(false);
   const loadingSeqRef = useRef(0);
   const hydratingContentRef = useRef(false);
   const saveStateRef = useRef<SaveState>("saved");
@@ -610,6 +642,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           throwOnError: false,
         },
       }),
+      MathInputAssist,
       ListBehaviorShortcuts,
       NoteReference,
     ],
@@ -623,15 +656,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       if (hydratingContentRef.current) {
         hydratingContentRef.current = false;
         return;
-      }
-      if (!normalizingMathRef.current) {
-        const normalized = normalizeDisplayMathParagraphs(activeEditor);
-        if (normalized) {
-          normalizingMathRef.current = true;
-          return;
-        }
-      } else {
-        normalizingMathRef.current = false;
       }
 
       if (!loaded) {
@@ -691,9 +715,37 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     });
   }, [slashCommands, slashMenu.query]);
 
+  useEffect(() => {
+    if (!slashMenu.open || filteredSlashCommands.length === 0) {
+      return;
+    }
+    setSlashMenu((prev) =>
+      prev.activeIndex < filteredSlashCommands.length
+        ? prev
+        : { ...prev, activeIndex: 0 },
+    );
+  }, [filteredSlashCommands.length, slashMenu.open]);
+
+  const buildMarkdownFromEditor = useCallback(
+    (activeEditor: Editor): string => {
+      const json = activeEditor.getJSON();
+      const shouldPreferFallback = hasNoteReferenceNode(json);
+      const generated = shouldPreferFallback
+        ? ""
+        : (activeEditor.getMarkdown?.() ?? "");
+      return normalizeMarkdownDisplayMathBlocks(
+        generated.trim() ? generated : fallbackMarkdownFromJson(json),
+      );
+    },
+    [],
+  );
+
   const commitTargetOption = useCallback(
     (option: PickerOption) => {
-      if (!editor || !targetPicker.range) {
+      if (!targetPicker.range) {
+        return;
+      }
+      if (!editor) {
         return;
       }
       editor
@@ -718,7 +770,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
 
   const executeSlashCommand = useCallback(
     (command: SlashCommandItem) => {
-      if (!editor || !slashMenu.range) {
+      if (!slashMenu.range) {
         return;
       }
       if (command.targetType) {
@@ -727,6 +779,9 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           slashMenu.range,
           slashMenu.position,
         );
+        return;
+      }
+      if (!editor) {
         return;
       }
 
@@ -944,6 +999,10 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     setRevisions([]);
     setRevisionError(null);
     setPreviewingRevisionId(null);
+    setSlashMenu(emptySlashMenuState());
+    setTargetPicker(emptyTargetPickerState());
+    setTargetOptions([]);
+    setTargetLoading(false);
     activeSaveSeqRef.current = null;
     queuedSourceRef.current = null;
     conflictLockRef.current = false;
@@ -968,7 +1027,12 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
                 typeof draft.content === "string"
               ) {
                 const storedTs = parseSqliteTimestamp(detail.updatedAt);
-                const draftLooksEmpty = isEffectivelyEmptyDoc(draft.content);
+                const parsedDraft = safeJsonParse(draft.content) as JSONContent;
+                const normalizedDraft =
+                  normalizeLegacyMathNodes(parsedDraft)[0] ?? parsedDraft;
+                const normalizedDraftContent = JSON.stringify(normalizedDraft);
+                const draftLooksEmpty =
+                  isEffectivelyEmptyDoc(normalizedDraftContent);
                 if (draftLooksEmpty) {
                   try {
                     window.localStorage.removeItem(draftStorageKey);
@@ -983,7 +1047,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
                     typeof draft.title === "string" && draft.title.trim()
                       ? draft.title
                       : detail.title;
-                  targetContent = draft.content;
+                  targetContent = normalizedDraftContent;
                   recoveredDraft = true;
                 }
               }
@@ -1307,7 +1371,11 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       }
       try {
         const markdown = await readTextFile(targetPath);
-        const importedDoc = parseMarkdownToEditorDoc(editor, markdown);
+        const normalizedMarkdown = normalizeMarkdownDisplayMathBlocks(markdown);
+        const importedDoc = parseMarkdownToEditorDoc(
+          editor,
+          normalizedMarkdown,
+        );
         const currentTitle = titleRef.current.trim();
         const suggestedTitle = deriveTitleFromPath(targetPath);
         const shouldReplaceTitle =
@@ -1397,14 +1465,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         return;
       }
       try {
-        const json = editor.getJSON();
-        const shouldPreferFallback = hasNoteReferenceNode(json);
-        const generated = shouldPreferFallback
-          ? ""
-          : (editor.getMarkdown?.() ?? "");
-        const markdown = normalizeMarkdownDisplayMathBlocks(
-          generated.trim() ? generated : fallbackMarkdownFromJson(json),
-        );
+        const markdown = buildMarkdownFromEditor(editor);
         await writeTextFile(targetPath, markdown);
         setNotice(`已导出到：${targetPath}`);
       } catch (saveError) {
@@ -1413,7 +1474,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         );
       }
     })();
-  }, [editor, title]);
+  }, [buildMarkdownFromEditor, editor, title]);
 
   const restoreRevision = useCallback(
     async (revisionId: number) => {
@@ -1424,11 +1485,23 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       setError(null);
       setNotice(null);
       try {
-        const response = await restoreNoteRevision(
-          noteId,
-          revisionId,
-          storedUpdatedAtRef.current,
-        );
+        const detail = await getNoteRevisionDetail(noteId, revisionId);
+        const restoredMarkdown = noteContentJsonToMarkdown(detail.content);
+        let restoredDoc = parseMarkdownToEditorDoc(editor, restoredMarkdown);
+        if (isEffectivelyEmptyDoc(JSON.stringify(restoredDoc))) {
+          const fallbackParsed = safeJsonParse(detail.content) as JSONContent;
+          const fallbackNormalized =
+            normalizeLegacyMathNodes(fallbackParsed)[0] ?? fallbackParsed;
+          if (!isEffectivelyEmptyDoc(JSON.stringify(fallbackNormalized))) {
+            restoredDoc = fallbackNormalized;
+          }
+        }
+        const response = await updateNoteContent(noteId, {
+          title: detail.title.trim() || "未命名笔记",
+          content: JSON.stringify(restoredDoc),
+          expectedUpdatedAt: storedUpdatedAtRef.current,
+          saveSource: "restore",
+        });
         setTitle(response.detail.title);
         titleRef.current = response.detail.title;
         setStoredUpdatedAt(response.detail.updatedAt);
@@ -1488,219 +1561,233 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-[1360px] px-6 py-6">
-      <header className="mb-4 rounded-3xl border border-[#243651] bg-[linear-gradient(145deg,rgba(15,23,36,0.95),rgba(15,39,72,0.68))] px-5 py-4 shadow-[0_20px_46px_rgba(0,0,0,0.35)]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/"
-              className="cursor-pointer rounded-full border border-[#2d3a52] px-3 py-2 text-xs font-semibold text-[#c7d5ef] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#142033]"
-            >
-              返回首页
-            </Link>
-            <Link
-              href="/note"
-              className="cursor-pointer rounded-full border border-[#2d3a52] px-3 py-2 text-xs font-semibold text-[#c7d5ef] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#142033]"
-            >
-              返回笔记列表
-            </Link>
-            <p className="text-xs font-semibold tracking-wide text-[#8ba2c7]">
-              保存状态：{statusLabel(saveState)}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={importMarkdown}
-              className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
-            >
-              导入 Markdown
-            </button>
-            <button
-              type="button"
-              onClick={downloadMarkdown}
-              className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
-            >
-              导出 Markdown
-            </button>
-            <button
-              type="button"
-              onClick={() => setFocusMode((value) => !value)}
-              className={`cursor-pointer rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
-                focusMode
-                  ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
-                  : "border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
-              }`}
-            >
-              {focusMode ? "退出专注模式" : "专注模式"}
-            </button>
-            <button
-              type="button"
-              onClick={toggleHistoryVisible}
-              className={`cursor-pointer rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
-                historyVisible
-                  ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
-                  : "border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
-              }`}
-            >
-              {historyVisible ? "收起历史版本" : "查看历史版本"}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="mb-4 flex flex-wrap gap-2 text-xs text-[#8ba2c7]">
-        <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
-          输入 <strong>/paper</strong> 关联文献
-        </span>
-        <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
-          输入 <strong>/task</strong> 关联任务
-        </span>
-        <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
-          输入 <strong>/note</strong> 关联笔记
-        </span>
-        <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
-          输入 <strong>/work_report</strong> 关联工作日报
-        </span>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <section className="space-y-3">
-          <input
-            value={title}
-            onChange={(event) => {
-              const nextTitle = event.target.value;
-              setTitle(nextTitle);
-              titleRef.current = nextTitle;
-              if (loaded) {
-                if (editor) {
-                  const json = editor.getJSON();
-                  const content = JSON.stringify(json);
-                  latestSnapshotHashRef.current = computeSnapshotHash(
-                    nextTitle.trim() || "未命名笔记",
-                    content,
-                  );
-                  persistDraft(nextTitle, json);
-                }
-                if (activeSaveSeqRef.current !== null) {
-                  queuedSourceRef.current = "autosave";
-                } else {
-                  setSaveState("dirty");
-                }
-              }
-            }}
-            placeholder="笔记标题"
-            className="w-full rounded-2xl border border-[#243651] bg-[#0f1724] px-4 py-3 text-xl font-semibold text-[#e5ecff] shadow-[0_10px_26px_rgba(0,0,0,0.25)] outline-none transition-colors focus:border-[#4f7dff]"
-          />
-          <div className="relative" ref={editorSurfaceRef}>
-            <EditorContent editor={editor} />
-            <SlashMenu
-              state={slashMenu}
-              items={filteredSlashCommands}
-              onPick={executeSlashCommand}
-            />
-            <TargetPicker
-              state={targetPicker}
-              loading={targetLoading}
-              options={targetOptions}
-              inputRef={targetQueryInputRef}
-              onQueryChange={(value) =>
-                setTargetPicker((prev) => ({ ...prev, query: value }))
-              }
-              onClose={closeTargetPicker}
-              onChoose={commitTargetOption}
-              onMoveNext={() =>
-                setTargetPicker((prev) => ({
-                  ...prev,
-                  activeIndex:
-                    targetOptions.length === 0
-                      ? 0
-                      : (prev.activeIndex + 1) % targetOptions.length,
-                }))
-              }
-              onMovePrev={() =>
-                setTargetPicker((prev) => ({
-                  ...prev,
-                  activeIndex:
-                    targetOptions.length === 0
-                      ? 0
-                      : (prev.activeIndex - 1 + targetOptions.length) %
-                        targetOptions.length,
-                }))
-              }
-            />
-          </div>
-          {notice ? <p className="text-sm text-[#8ef3cf]">{notice}</p> : null}
-          {error ? <p className="text-sm text-[#ff9fba]">{error}</p> : null}
-          {conflictStoredVersion ? (
-            <div className="rounded-2xl border border-[#5a2f3f] bg-[#23131a] p-3 text-xs text-[#ffd7e3]">
-              <div className="flex items-center justify-between gap-3">
-                <p>检测到保存冲突，可查看差异后选择刷新页面或恢复历史版本。</p>
-                <button
-                  type="button"
-                  onClick={() => setShowConflictDiff((current) => !current)}
-                  className="rounded-full border border-[#704153] px-3 py-1 font-semibold text-[#ffd7e3] hover:border-[#ff8fb0]"
-                >
-                  {showConflictDiff ? "收起差异" : "查看差异"}
-                </button>
-              </div>
-              {showConflictDiff ? (
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                  <div>
-                    <p className="mb-1 text-[11px] text-[#ffb4c9]">本地草稿</p>
-                    <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
-                      {localDraftPreview}
-                    </pre>
-                  </div>
-                  <div>
-                    <p className="mb-1 text-[11px] text-[#ffb4c9]">
-                      数据库版本
-                    </p>
-                    <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
-                      {conflictStoredVersion.content}
-                    </pre>
-                  </div>
-                </div>
-              ) : null}
+    <>
+      <div className="fixed inset-x-0 top-0 z-40 px-6 pt-4">
+        <header className="mx-auto w-full max-w-[1360px] rounded-3xl border border-[#243651] bg-[linear-gradient(145deg,rgba(15,23,36,0.95),rgba(15,39,72,0.68))] px-5 py-4 shadow-[0_20px_46px_rgba(0,0,0,0.35)] backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <Link
+                href="/"
+                className="cursor-pointer rounded-full border border-[#2d3a52] px-3 py-2 text-xs font-semibold text-[#c7d5ef] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#142033]"
+              >
+                返回首页
+              </Link>
+              <Link
+                href="/note"
+                className="cursor-pointer rounded-full border border-[#2d3a52] px-3 py-2 text-xs font-semibold text-[#c7d5ef] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#142033]"
+              >
+                返回笔记列表
+              </Link>
+              <p className="text-xs font-semibold tracking-wide text-[#8ba2c7]">
+                保存状态：{statusLabel(saveState)}
+              </p>
             </div>
-          ) : null}
-        </section>
 
-        <aside className="space-y-4">
-          <RevisionHistoryPanel
-            visible={historyVisible}
-            loading={revisionsLoading}
-            error={revisionError}
-            revisions={revisions}
-            previewingRevisionId={previewingRevisionId}
-            restoringRevisionId={restoringRevisionId}
-            onRefresh={() => void refreshRevisions(true)}
-            onClose={closeHistoryPanel}
-            onPreviewRevision={(revisionId) => void previewRevision(revisionId)}
-            onRestoreRevision={(revisionId) => void restoreRevision(revisionId)}
-          />
-
-          <LinkedSidebar
-            context={context}
-            onOpenPaper={(paperId) => setModal({ type: "paper", paperId })}
-            onOpenTask={(taskId) => {
-              const task = context.tasks.find((item) => item.taskId === taskId);
-              if (task) {
-                setModal({ type: "task", task });
-              }
-            }}
-          />
-        </aside>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={importMarkdown}
+                className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+              >
+                导入 Markdown
+              </button>
+              <button
+                type="button"
+                onClick={downloadMarkdown}
+                className="cursor-pointer rounded-full border border-[#3a4f77] bg-[#142033] px-4 py-2 text-xs font-semibold text-[#dbe6ff] transition-colors duration-200 hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+              >
+                导出 Markdown
+              </button>
+              <button
+                type="button"
+                onClick={() => setFocusMode((value) => !value)}
+                className={`rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
+                  focusMode
+                    ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
+                    : "cursor-pointer border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+                }`}
+              >
+                {focusMode ? "退出专注模式" : "专注模式"}
+              </button>
+              <button
+                type="button"
+                onClick={toggleHistoryVisible}
+                className={`cursor-pointer rounded-full border px-4 py-2 text-xs font-semibold transition-colors duration-200 ${
+                  historyVisible
+                    ? "border-[#4f7dff] bg-[#1a2b47] text-[#e5ecff]"
+                    : "border-[#3a4f77] bg-[#142033] text-[#dbe6ff] hover:border-[#4f7dff] hover:bg-[#1a2b47]"
+                }`}
+              >
+                {historyVisible ? "收起历史版本" : "查看历史版本"}
+              </button>
+            </div>
+          </div>
+        </header>
       </div>
 
-      <DetailModal
-        modal={modal}
-        paperTab={paperTab}
-        paperDetail={paperDetail}
-        onClose={() => setModal(null)}
-        onChangePaperTab={setPaperTab}
-      />
-    </main>
+      <main className="mx-auto min-h-screen w-full max-w-[1360px] px-6 pb-6 pt-[122px]">
+        <div className="mb-4 flex flex-wrap gap-2 text-xs text-[#8ba2c7]">
+          <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
+            输入 <strong>/paper</strong> 关联文献
+          </span>
+          <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
+            输入 <strong>/task</strong> 关联任务
+          </span>
+          <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
+            输入 <strong>/note</strong> 关联笔记
+          </span>
+          <span className="rounded-full border border-[#2d3a52] bg-[#101a2c] px-3 py-1">
+            输入 <strong>/work_report</strong> 关联工作日报
+          </span>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="space-y-3">
+            <input
+              value={title}
+              onChange={(event) => {
+                const nextTitle = event.target.value;
+                setTitle(nextTitle);
+                titleRef.current = nextTitle;
+                if (loaded) {
+                  if (editor) {
+                    const json = editor.getJSON();
+                    const content = JSON.stringify(json);
+                    latestSnapshotHashRef.current = computeSnapshotHash(
+                      nextTitle.trim() || "未命名笔记",
+                      content,
+                    );
+                    persistDraft(nextTitle, json);
+                  }
+                  if (activeSaveSeqRef.current !== null) {
+                    queuedSourceRef.current = "autosave";
+                  } else {
+                    setSaveState("dirty");
+                  }
+                }
+              }}
+              placeholder="笔记标题"
+              className="w-full rounded-2xl border border-[#243651] bg-[#0f1724] px-4 py-3 text-xl font-semibold text-[#e5ecff] shadow-[0_10px_26px_rgba(0,0,0,0.25)] outline-none transition-colors focus:border-[#4f7dff]"
+            />
+            <div className="relative" ref={editorSurfaceRef}>
+              <EditorContent editor={editor} />
+              <SlashMenu
+                state={slashMenu}
+                items={filteredSlashCommands}
+                onPick={executeSlashCommand}
+              />
+              <TargetPicker
+                state={targetPicker}
+                loading={targetLoading}
+                options={targetOptions}
+                inputRef={targetQueryInputRef}
+                onQueryChange={(value) =>
+                  setTargetPicker((prev) => ({ ...prev, query: value }))
+                }
+                onClose={closeTargetPicker}
+                onChoose={commitTargetOption}
+                onMoveNext={() =>
+                  setTargetPicker((prev) => ({
+                    ...prev,
+                    activeIndex:
+                      targetOptions.length === 0
+                        ? 0
+                        : (prev.activeIndex + 1) % targetOptions.length,
+                  }))
+                }
+                onMovePrev={() =>
+                  setTargetPicker((prev) => ({
+                    ...prev,
+                    activeIndex:
+                      targetOptions.length === 0
+                        ? 0
+                        : (prev.activeIndex - 1 + targetOptions.length) %
+                          targetOptions.length,
+                  }))
+                }
+              />
+            </div>
+            {notice ? <p className="text-sm text-[#8ef3cf]">{notice}</p> : null}
+            {error ? <p className="text-sm text-[#ff9fba]">{error}</p> : null}
+            {conflictStoredVersion ? (
+              <div className="rounded-2xl border border-[#5a2f3f] bg-[#23131a] p-3 text-xs text-[#ffd7e3]">
+                <div className="flex items-center justify-between gap-3">
+                  <p>
+                    检测到保存冲突，可查看差异后选择刷新页面或恢复历史版本。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowConflictDiff((current) => !current)}
+                    className="rounded-full border border-[#704153] px-3 py-1 font-semibold text-[#ffd7e3] hover:border-[#ff8fb0]"
+                  >
+                    {showConflictDiff ? "收起差异" : "查看差异"}
+                  </button>
+                </div>
+                {showConflictDiff ? (
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-[11px] text-[#ffb4c9]">
+                        本地草稿
+                      </p>
+                      <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
+                        {localDraftPreview}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-[11px] text-[#ffb4c9]">
+                        数据库版本
+                      </p>
+                      <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
+                        {conflictStoredVersion.content}
+                      </pre>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
+          <aside className="space-y-4">
+            <RevisionHistoryPanel
+              visible={historyVisible}
+              loading={revisionsLoading}
+              error={revisionError}
+              revisions={revisions}
+              previewingRevisionId={previewingRevisionId}
+              restoringRevisionId={restoringRevisionId}
+              onRefresh={() => void refreshRevisions(true)}
+              onClose={closeHistoryPanel}
+              onPreviewRevision={(revisionId) =>
+                void previewRevision(revisionId)
+              }
+              onRestoreRevision={(revisionId) =>
+                void restoreRevision(revisionId)
+              }
+            />
+
+            <LinkedSidebar
+              context={context}
+              onOpenPaper={(paperId) => setModal({ type: "paper", paperId })}
+              onOpenTask={(taskId) => {
+                const task = context.tasks.find(
+                  (item) => item.taskId === taskId,
+                );
+                if (task) {
+                  setModal({ type: "task", task });
+                }
+              }}
+            />
+          </aside>
+        </div>
+
+        <DetailModal
+          modal={modal}
+          paperTab={paperTab}
+          paperDetail={paperDetail}
+          onClose={() => setModal(null)}
+          onChangePaperTab={setPaperTab}
+        />
+      </main>
+    </>
   );
 }

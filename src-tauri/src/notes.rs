@@ -11,6 +11,7 @@ use crate::{
     NoteWorkReportOptionDto,
   },
 };
+use serde_json::json;
 use serde_json::Value;
 use tauri::State;
 
@@ -119,12 +120,14 @@ pub async fn restore_note_revision(
 ) -> Result<NoteSaveResultDto, String> {
   let expected_updated_at = normalize_expected_updated_at(expected_updated_at);
   let revision = get_note_revision_detail_by_id(&state.pool, id, revision_id).await?;
-  let links = extract_links_from_note_content(&revision.content)?;
+  let title = normalize_title(&revision.title)?;
+  let content = normalize_restored_note_content(&revision.content)?;
+  let links = extract_links_from_note_content(&content)?;
   update_note_content_and_links(
     &state.pool,
     id,
-    &revision.title,
-    &revision.content,
+    &title,
+    &content,
     expected_updated_at.as_deref(),
     "restore",
     &links,
@@ -188,6 +191,27 @@ fn normalize_content(content: &str) -> Result<String, String> {
     ));
   }
   Ok(trimmed.to_string())
+}
+
+fn normalize_restored_note_content(content: &str) -> Result<String, String> {
+  let trimmed = content.trim();
+  if trimmed.is_empty() {
+    return Err(String::from("note content cannot be empty"));
+  }
+
+  let parsed_value = match serde_json::from_str::<Value>(trimmed) {
+    Ok(value) => unwrap_stringified_json_value(value, 3),
+    Err(_) => Value::String(trimmed.to_string()),
+  };
+  let normalized_value = normalize_note_value_to_doc(parsed_value);
+  let serialized = serde_json::to_string(&normalized_value).map_err(|e| e.to_string())?;
+
+  if is_effectively_empty_note_document(&serialized)? {
+    return Err(String::from(
+      "note content is empty and was blocked to prevent accidental overwrite",
+    ));
+  }
+  Ok(serialized)
 }
 
 fn normalize_expected_updated_at(value: Option<String>) -> Option<String> {
@@ -269,6 +293,101 @@ fn node_has_meaningful_content(node: &Value) -> bool {
     return children.iter().any(node_has_meaningful_content);
   }
   false
+}
+
+fn unwrap_stringified_json_value(value: Value, max_depth: usize) -> Value {
+  let mut current = value;
+  for _ in 0..max_depth {
+    let Value::String(raw) = current else {
+      return current;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+      return Value::String(raw);
+    }
+    current = match serde_json::from_str::<Value>(trimmed) {
+      Ok(next) => next,
+      Err(_) => return Value::String(raw),
+    };
+  }
+  current
+}
+
+fn normalize_note_value_to_doc(value: Value) -> Value {
+  match value {
+    Value::Object(map) => {
+      if let Some(node_type) = map.get("type").and_then(Value::as_str) {
+        if node_type == "doc" {
+          return Value::Object(map);
+        }
+        return json!({
+          "type": "doc",
+          "content": [Value::Object(map)],
+        });
+      }
+
+      let fallback_text = map
+        .get("content")
+        .and_then(Value::as_str)
+        .or_else(|| map.get("markdown").and_then(Value::as_str))
+        .or_else(|| map.get("text").and_then(Value::as_str))
+        .map(ToString::to_string);
+      if let Some(text) = fallback_text {
+        if !text.trim().is_empty() {
+          return build_plain_text_doc(&text);
+        }
+      }
+
+      let object_value = Value::Object(map);
+      let serialized = serde_json::to_string(&object_value).unwrap_or_default();
+      build_plain_text_doc(&serialized)
+    }
+    Value::Array(items) => {
+      let node_like = items.iter().all(|item| {
+        item
+          .as_object()
+          .and_then(|map| map.get("type"))
+          .and_then(Value::as_str)
+          .map(|value| !value.trim().is_empty())
+          .unwrap_or(false)
+      });
+      if node_like {
+        json!({
+          "type": "doc",
+          "content": items,
+        })
+      } else {
+        let array_value = Value::Array(items);
+        let serialized = serde_json::to_string(&array_value).unwrap_or_default();
+        build_plain_text_doc(&serialized)
+      }
+    }
+    Value::String(text) => build_plain_text_doc(&text),
+    Value::Bool(flag) => build_plain_text_doc(if flag { "true" } else { "false" }),
+    Value::Number(number) => build_plain_text_doc(&number.to_string()),
+    Value::Null => json!({
+      "type": "doc",
+      "content": [{"type": "paragraph"}],
+    }),
+  }
+}
+
+fn build_plain_text_doc(text: &str) -> Value {
+  if text.trim().is_empty() {
+    return json!({
+      "type": "doc",
+      "content": [{"type": "paragraph"}],
+    });
+  }
+  json!({
+    "type": "doc",
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [{"type": "text", "text": text}],
+      }
+    ],
+  })
 }
 
 fn normalize_links(links: Vec<NoteLinkRefInput>) -> Vec<NoteLinkRefInput> {
@@ -371,4 +490,72 @@ fn is_valid_date(value: &str) -> bool {
     }
   }
   true
+}
+
+#[cfg(test)]
+mod tests {
+  use super::normalize_restored_note_content;
+  use serde_json::Value;
+
+  #[test]
+  fn normalize_restored_note_content_should_unwrap_double_encoded_doc() {
+    let raw = r#""{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}]}""#;
+    let normalized = normalize_restored_note_content(raw)
+      .unwrap_or_else(|error| panic!("normalize failed: {error}"));
+    let parsed: Value =
+      serde_json::from_str(&normalized).unwrap_or_else(|error| panic!("invalid json: {error}"));
+    assert_eq!(parsed.get("type").and_then(Value::as_str), Some("doc"));
+    let text = parsed
+      .get("content")
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|paragraph| paragraph.get("content"))
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|text| text.get("text"))
+      .and_then(Value::as_str)
+      .unwrap_or("");
+    assert_eq!(text, "hello");
+  }
+
+  #[test]
+  fn normalize_restored_note_content_should_wrap_plain_text_as_doc() {
+    let normalized = normalize_restored_note_content("legacy markdown line")
+      .unwrap_or_else(|error| panic!("normalize failed: {error}"));
+    let parsed: Value =
+      serde_json::from_str(&normalized).unwrap_or_else(|error| panic!("invalid json: {error}"));
+    assert_eq!(parsed.get("type").and_then(Value::as_str), Some("doc"));
+    let text = parsed
+      .get("content")
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|paragraph| paragraph.get("content"))
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|text| text.get("text"))
+      .and_then(Value::as_str)
+      .unwrap_or("");
+    assert_eq!(text, "legacy markdown line");
+  }
+
+  #[test]
+  fn normalize_restored_note_content_should_serialize_non_node_object_as_text_doc() {
+    let normalized = normalize_restored_note_content(r#"{"title":"legacy","foo":1}"#)
+      .unwrap_or_else(|error| panic!("normalize failed: {error}"));
+    let parsed: Value =
+      serde_json::from_str(&normalized).unwrap_or_else(|error| panic!("invalid json: {error}"));
+    assert_eq!(parsed.get("type").and_then(Value::as_str), Some("doc"));
+    let text = parsed
+      .get("content")
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|paragraph| paragraph.get("content"))
+      .and_then(Value::as_array)
+      .and_then(|items| items.first())
+      .and_then(|text| text.get("text"))
+      .and_then(Value::as_str)
+      .unwrap_or("");
+    assert!(text.contains("\"title\":\"legacy\""));
+    assert!(text.contains("\"foo\":1"));
+  }
 }
