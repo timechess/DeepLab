@@ -1040,6 +1040,8 @@ fn prefix_markdown_lines(content: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use sqlx::sqlite::SqlitePoolOptions;
+  use tokio::runtime::Builder;
 
   #[test]
   fn normalize_note_content_to_markdown_should_render_note_reference() {
@@ -1083,6 +1085,142 @@ mod tests {
 
     let markdown = normalize_note_content_to_markdown(&raw);
     assert_eq!(markdown, "[[note:7|7]]");
+  }
+
+  #[test]
+  fn update_note_content_should_skip_duplicate_revision_for_unchanged_snapshot() {
+    let runtime = match Builder::new_current_thread().enable_all().build() {
+      Ok(value) => value,
+      Err(error) => panic!("failed to build tokio runtime: {error}"),
+    };
+    runtime.block_on(async {
+      let pool = match SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to open sqlite memory pool: {error}"),
+      };
+
+      if let Err(error) = sqlx::query(
+        "CREATE TABLE notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL DEFAULT '',
+          createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )",
+      )
+      .execute(&pool)
+      .await
+      {
+        panic!("failed to create notes table: {error}");
+      }
+
+      if let Err(error) = sqlx::query(
+        "CREATE TABLE note_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          note_id INTEGER NOT NULL,
+          link_type TEXT NOT NULL,
+          target_paper_id TEXT,
+          target_task_id INTEGER,
+          target_note_id INTEGER,
+          target_work_report_date TEXT,
+          createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )",
+      )
+      .execute(&pool)
+      .await
+      {
+        panic!("failed to create note_links table: {error}");
+      }
+
+      if let Err(error) = sqlx::query(
+        "CREATE TABLE note_revisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          note_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          content_length INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          createdAt TEXT NOT NULL,
+          content_hash TEXT NOT NULL DEFAULT '',
+          snapshot_size INTEGER NOT NULL DEFAULT 0
+        )",
+      )
+      .execute(&pool)
+      .await
+      {
+        panic!("failed to create note_revisions table: {error}");
+      }
+
+      let created = match create_note(&pool).await {
+        Ok(value) => value,
+        Err(error) => panic!("failed to create note: {error}"),
+      };
+
+      let content_a = json!({
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "same payload" }]
+          }
+        ]
+      })
+      .to_string();
+      let content_b = String::from(
+        r#"{"content":[{"content":[{"text":"same payload","type":"text"}],"type":"paragraph"}],"type":"doc"}"#,
+      );
+      let links: [NoteLinkRefInput; 0] = [];
+
+      let first = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &content_a,
+        Some(&created.updated_at),
+        "manual",
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save first snapshot: {error}"),
+      };
+
+      let second = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &content_b,
+        Some(&first.detail.updated_at),
+        "shortcut",
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save duplicate snapshot: {error}"),
+      };
+
+      let revision_total: i64 =
+        match sqlx::query_scalar("SELECT COUNT(1) FROM note_revisions WHERE note_id = ?1")
+          .bind(created.id)
+          .fetch_one(&pool)
+          .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to count note revisions: {error}"),
+        };
+
+      assert_eq!(revision_total, 2);
+      assert_eq!(second.revision_id, first.revision_id);
+      assert_eq!(second.detail.updated_at, first.detail.updated_at);
+      assert_eq!(second.saved_hash, first.saved_hash);
+    });
   }
 }
 
@@ -1576,6 +1714,15 @@ fn build_snapshot_hash(title: &str, content: &str) -> String {
   compute_content_hash(&format!("{title}\n{content}"))
 }
 
+fn note_contents_semantically_equal(left: &str, right: &str) -> bool {
+  if left == right {
+    return true;
+  }
+  let left_value = serde_json::from_str::<Value>(left);
+  let right_value = serde_json::from_str::<Value>(right);
+  matches!((left_value, right_value), (Ok(lv), Ok(rv)) if lv == rv)
+}
+
 fn normalize_source(source: &str) -> String {
   let trimmed = source.trim().to_lowercase();
   if trimmed.is_empty() {
@@ -1743,6 +1890,56 @@ pub async fn update_note_content_and_links(
   let saved_hash = build_snapshot_hash(title, content);
   let mut skipped_links = Vec::new();
   let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+  let existing_row = sqlx::query(
+    "SELECT id, title, content, createdAt, updatedAt, COALESCE(content_hash, '') AS content_hash
+    FROM notes
+    WHERE id = ?1",
+  )
+  .bind(id)
+  .fetch_optional(&mut *tx)
+  .await
+  .map_err(|e| e.to_string())?
+  .ok_or_else(|| String::from("note not found"))?;
+  let existing_detail = NoteDetailDto {
+    id: existing_row.try_get("id").map_err(|e| e.to_string())?,
+    title: existing_row.try_get("title").map_err(|e| e.to_string())?,
+    content: existing_row.try_get("content").map_err(|e| e.to_string())?,
+    created_at: existing_row
+      .try_get("createdAt")
+      .map_err(|e| e.to_string())?,
+    updated_at: existing_row
+      .try_get("updatedAt")
+      .map_err(|e| e.to_string())?,
+  };
+  let existing_saved_hash: String = existing_row
+    .try_get("content_hash")
+    .map_err(|e| e.to_string())?;
+  let existing_saved_hash = if existing_saved_hash.trim().is_empty() {
+    build_snapshot_hash(&existing_detail.title, &existing_detail.content)
+  } else {
+    existing_saved_hash
+  };
+  if let Some(expected) = expected_updated_at {
+    if existing_detail.updated_at != expected {
+      return Err(String::from(
+        "note was modified by another save, please reload and retry",
+      ));
+    }
+  }
+  if existing_detail.title == title
+    && note_contents_semantically_equal(&existing_detail.content, content)
+  {
+    let revision_id = latest_note_revision_id_tx(&mut tx, id).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    return Ok(NoteSaveResultDto {
+      saved_at: existing_detail.updated_at.clone(),
+      detail: existing_detail,
+      saved_hash: existing_saved_hash,
+      revision_id,
+      skipped_links: Vec::new(),
+    });
+  }
+
   let result = if let Some(expected) = expected_updated_at {
     sqlx::query(
       "UPDATE notes
@@ -2045,10 +2242,7 @@ async fn append_note_revision_tx(
     let latest_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
     let latest_title: String = row.try_get("title").map_err(|e| e.to_string())?;
     let latest_hash: String = row.try_get("content_hash").map_err(|e| e.to_string())?;
-    if !is_key_revision_source(&normalized_source)
-      && latest_hash == content_hash
-      && latest_title == title
-    {
+    if latest_hash == content_hash && latest_title == title {
       return Ok(latest_id);
     }
   }
@@ -2077,6 +2271,29 @@ async fn append_note_revision_tx(
       .try_get("revision_id")
       .map_err(|e| e.to_string())?,
   )
+}
+
+async fn latest_note_revision_id_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+  note_id: i64,
+) -> Result<i64, String> {
+  let row = sqlx::query(
+    "SELECT id AS revision_id
+    FROM note_revisions
+    WHERE note_id = ?1
+    ORDER BY id DESC
+    LIMIT 1",
+  )
+  .bind(note_id)
+  .fetch_optional(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+  match row {
+    Some(record) => record
+      .try_get("revision_id")
+      .map_err(|e| e.to_string()),
+    None => Ok(0),
+  }
 }
 
 async fn compact_note_revisions_tx(

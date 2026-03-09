@@ -414,6 +414,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const titleRef = useRef("");
   const storedUpdatedAtRef = useRef<string | null>(null);
   const latestSnapshotHashRef = useRef<string>("");
+  const savedSnapshotHashRef = useRef<string>("");
   const queuedSourceRef = useRef<
     "autosave" | "shortcut" | "visibility" | "restore" | "manual" | null
   >(null);
@@ -782,6 +783,19 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       if (!snapshot) {
         return;
       }
+      if (
+        savedSnapshotHashRef.current !== "" &&
+        snapshot.snapshotHash === savedSnapshotHashRef.current
+      ) {
+        queuedSourceRef.current = null;
+        setError(null);
+        setSaveState("saved");
+        clearDraft();
+        if (source === "manual" || source === "shortcut") {
+          setNotice("内容无变化，已跳过保存。");
+        }
+        return;
+      }
 
       if (activeSaveSeqRef.current !== null) {
         queuedSourceRef.current = source;
@@ -810,6 +824,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         titleRef.current = response.detail.title;
         setStoredUpdatedAt(response.detail.updatedAt);
         storedUpdatedAtRef.current = response.detail.updatedAt;
+        savedSnapshotHashRef.current = response.savedHash;
         setConflictStoredVersion(null);
         setShowConflictDiff(false);
         conflictLockRef.current = false;
@@ -863,8 +878,10 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       } finally {
         if (activeSaveSeqRef.current === seq) {
           activeSaveSeqRef.current = null;
-          if (queuedSourceRef.current !== null) {
-            setSaveState("dirty");
+          const queued = queuedSourceRef.current;
+          if (queued !== null) {
+            queuedSourceRef.current = null;
+            void saveNow(queued);
           }
         }
       }
@@ -890,21 +907,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   useEffect(() => {
     storedUpdatedAtRef.current = storedUpdatedAt;
   }, [storedUpdatedAt]);
-
-  useEffect(() => {
-    if (!loaded) {
-      return;
-    }
-    if (activeSaveSeqRef.current !== null) {
-      return;
-    }
-    if (queuedSourceRef.current === null) {
-      return;
-    }
-    const queued = queuedSourceRef.current;
-    queuedSourceRef.current = null;
-    void saveNow(queued);
-  }, [loaded, saveNow]);
 
   useEffect(() => {
     focusModeRef.current = focusMode;
@@ -946,6 +948,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     queuedSourceRef.current = null;
     conflictLockRef.current = false;
     latestSnapshotHashRef.current = "";
+    savedSnapshotHashRef.current = "";
     void (async () => {
       try {
         const detail = await getNoteDetail(noteId);
@@ -993,6 +996,10 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         titleRef.current = targetTitle;
         setStoredUpdatedAt(detail.updatedAt);
         storedUpdatedAtRef.current = detail.updatedAt;
+        savedSnapshotHashRef.current = computeSnapshotHash(
+          detail.title.trim() || "未命名笔记",
+          detail.content,
+        );
         const parsed = safeJsonParse(targetContent) as JSONContent;
         const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
         hydratingContentRef.current = true;
@@ -1431,6 +1438,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         hydratingContentRef.current = true;
         editor.commands.setContent(normalized);
         latestSnapshotHashRef.current = response.savedHash;
+        savedSnapshotHashRef.current = response.savedHash;
         queuedSourceRef.current = null;
         activeSaveSeqRef.current = null;
         conflictLockRef.current = false;
