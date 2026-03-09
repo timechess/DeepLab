@@ -573,7 +573,7 @@ pre {
 }
 
 .note-math-command-menu {
-  position: absolute;
+  position: fixed;
   z-index: 65;
   min-width: 260px;
   border: 1px solid #2d3a52;
@@ -581,6 +581,8 @@ pre {
   background: #0f1724;
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
   padding: 0.35rem;
+  max-height: min(320px, calc(100vh - 16px));
+  overflow-y: auto;
 }
 
 .note-math-command-menu button {

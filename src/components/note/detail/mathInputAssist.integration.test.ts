@@ -3,7 +3,7 @@ import { Editor } from "@tiptap/core";
 import { Markdown } from "@tiptap/markdown";
 import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { InlineDisplayMathematics } from "./inlineDisplayMathematics";
 import { MathInputAssist } from "./mathInputAssist";
 
@@ -72,6 +72,16 @@ function findParagraphCursorByText(
   return cursor;
 }
 
+async function waitForFrame(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 16);
+  });
+}
+
 afterEach(() => {
   document.body.innerHTML = "";
 });
@@ -102,6 +112,56 @@ describe("MathInputAssist display block behaviors", () => {
         },
       ],
     });
+    editor.destroy();
+  });
+
+  test("typing $$ below an existing display block does not jump upward", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "x^2+y^2=z^2" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+        },
+      ],
+    });
+
+    const tailCursor = findParagraphCursorByText(editor, "", 0);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, tailCursor),
+      ),
+    );
+
+    expect(pressKey(editor, "$")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(editor.state.selection.$from.parent.textContent).toBe("$$");
+    expect(editor.state.selection.$from.parentOffset).toBe(1);
+
+    expect(pressKey(editor, "$")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(editor.state.selection.$from.parent.textContent).toBe("");
+    expect(editor.state.selection.$from.parentOffset).toBe(0);
+
+    const fenceParagraphs: number[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "paragraph" && node.textContent === "$$") {
+        fenceParagraphs.push(1);
+      }
+      return true;
+    });
+    expect(fenceParagraphs.length).toBe(4);
     editor.destroy();
   });
 
@@ -193,6 +253,61 @@ describe("MathInputAssist display block behaviors", () => {
     const preview = document.body.querySelector(".Tiptap-math-hover-preview");
     expect(menu).not.toBeNull();
     expect(preview).not.toBeNull();
+    editor.destroy();
+  });
+
+  test("repositions command menu on scroll to stay below caret", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$\n\n$$" }],
+        },
+      ],
+    });
+
+    const positionAtContentLine = 4;
+    const setSelectionTr = editor.state.tr.setSelection(
+      TextSelection.create(editor.state.doc, positionAtContentLine),
+    );
+    editor.view.dispatch(setSelectionTr);
+
+    let caretBottom = 120;
+    const caretLeft = 160;
+    const coordsSpy = vi
+      .spyOn(editor.view, "coordsAtPos")
+      .mockImplementation(() => {
+        return {
+          x: caretLeft,
+          y: caretBottom - 16,
+          width: 0,
+          height: 16,
+          top: caretBottom - 16,
+          right: caretLeft,
+          bottom: caretBottom,
+          left: caretLeft,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+
+    insertAt(editor, positionAtContentLine, "\\");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).not.toBeNull();
+    expect(menu).toBeInstanceOf(HTMLDivElement);
+    const menuElement = menu as HTMLDivElement;
+    expect(menuElement.style.top).toBe("128px");
+
+    caretBottom = 220;
+    window.dispatchEvent(new Event("scroll"));
+    await waitForFrame();
+
+    expect(menuElement.style.top).toBe("228px");
+
+    coordsSpy.mockRestore();
     editor.destroy();
   });
 
@@ -426,6 +541,198 @@ describe("MathInputAssist display block behaviors", () => {
     for (const fence of fenceEditors) {
       expect(fence.getAttribute("style") ?? "").not.toContain("opacity: 0");
     }
+    editor.destroy();
+  });
+
+  test("does not jump to previous formula when selecting orphan $$ fence", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "x^2+y^2=z^2" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "tail" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const tailCursor = findParagraphCursorByText(editor, "tail");
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, tailCursor),
+      ),
+    );
+
+    const orphanFenceCursor = findParagraphCursorByText(editor, "$$", 2);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, orphanFenceCursor),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(editor.state.selection.from).toBe(orphanFenceCursor);
+    editor.destroy();
+  });
+
+  test("does not pair $$ fences across different parent containers", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "head" }],
+        },
+        {
+          type: "blockquote",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "$$" }],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "outside" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const headCursor = findParagraphCursorByText(editor, "head", 0, true);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, headCursor),
+      ),
+    );
+
+    const closingFenceCursor = findParagraphCursorByText(editor, "$$", 1);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, closingFenceCursor),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(editor.state.selection.from).toBe(closingFenceCursor);
+    editor.destroy();
+  });
+
+  test("does not reopen command menu when moving cursor backward after completion", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "x" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const contentEnd = findParagraphCursorByText(editor, "x", 0, true);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, contentEnd),
+      ),
+    );
+    insertAt(editor, contentEnd, "\\");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).not.toBeNull();
+
+    expect(pressKey(editor, "Enter")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).toBeNull();
+
+    const currentCursor = editor.state.selection.from;
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, Math.max(1, currentCursor - 1)),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).toBeNull();
+    editor.destroy();
+  });
+
+  test("reopens command menu after typing \\ again post-completion", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "x" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const contentEnd = findParagraphCursorByText(editor, "x", 0, true);
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, contentEnd),
+      ),
+    );
+    insertAt(editor, contentEnd, "\\");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pressKey(editor, "Enter")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const currentCursor = editor.state.selection.from;
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, Math.max(1, currentCursor - 1)),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).toBeNull();
+
+    insertAt(editor, editor.state.selection.from, "\\");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).not.toBeNull();
     editor.destroy();
   });
 

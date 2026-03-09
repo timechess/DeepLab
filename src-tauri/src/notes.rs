@@ -79,6 +79,7 @@ pub async fn update_note_content(
     &content,
     expected_updated_at.as_deref(),
     save_source.as_deref().unwrap_or("unknown"),
+    true,
     &links,
   )
   .await
@@ -130,6 +131,7 @@ pub async fn restore_note_revision(
     &content,
     expected_updated_at.as_deref(),
     "restore",
+    false,
     &links,
   )
   .await
@@ -170,6 +172,18 @@ fn normalize_query(query: Option<String>) -> Option<String> {
       Some(trimmed.to_string())
     }
   })
+}
+
+fn is_ignorable_text_char(ch: char) -> bool {
+  ch.is_whitespace()
+    || matches!(
+      ch,
+      '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+    )
+}
+
+fn has_meaningful_text(value: &str) -> bool {
+  value.chars().any(|ch| !is_ignorable_text_char(ch))
 }
 
 fn normalize_title(title: &str) -> Result<String, String> {
@@ -260,7 +274,7 @@ fn node_has_meaningful_content(node: &Value) -> bool {
     return map
       .get("text")
       .and_then(Value::as_str)
-      .map(|text| !text.trim().is_empty())
+      .map(has_meaningful_text)
       .unwrap_or(false);
   }
   if node_type == "noteReference" {
@@ -272,7 +286,7 @@ fn node_has_meaningful_content(node: &Value) -> bool {
       .and_then(Value::as_object)
       .and_then(|attrs| attrs.get("src"))
       .and_then(Value::as_str)
-      .map(|src| !src.trim().is_empty())
+      .map(has_meaningful_text)
       .unwrap_or(false);
   }
 
@@ -282,7 +296,7 @@ fn node_has_meaningful_content(node: &Value) -> bool {
       .or_else(|| attrs.get("value"))
       .or_else(|| attrs.get("text"))
       .and_then(Value::as_str)
-      .map(|s| !s.trim().is_empty())
+      .map(has_meaningful_text)
       .unwrap_or(false);
     if latex {
       return true;
@@ -373,7 +387,7 @@ fn normalize_note_value_to_doc(value: Value) -> Value {
 }
 
 fn build_plain_text_doc(text: &str) -> Value {
-  if text.trim().is_empty() {
+  if !has_meaningful_text(text) {
     return json!({
       "type": "doc",
       "content": [{"type": "paragraph"}],
@@ -494,8 +508,8 @@ fn is_valid_date(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::normalize_restored_note_content;
-  use serde_json::Value;
+  use super::{normalize_content, normalize_restored_note_content};
+  use serde_json::{json, Value};
 
   #[test]
   fn normalize_restored_note_content_should_unwrap_double_encoded_doc() {
@@ -557,5 +571,23 @@ mod tests {
       .unwrap_or("");
     assert!(text.contains("\"title\":\"legacy\""));
     assert!(text.contains("\"foo\":1"));
+  }
+
+  #[test]
+  fn normalize_content_should_reject_zero_width_only_doc() {
+    let raw = json!({
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "\u{200B}\u{200C}\u{2060}" }
+          ]
+        }
+      ]
+    })
+    .to_string();
+    let error = normalize_content(&raw).expect_err("zero-width-only doc must be rejected");
+    assert!(error.contains("empty"));
   }
 }

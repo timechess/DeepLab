@@ -25,6 +25,7 @@ import {
   type NoteLinkedContext,
   type NoteRefType,
   type NoteRevisionListItem,
+  restoreNoteRevision,
   searchNotePapers,
   searchNoteWorkReports,
   updateNoteContent,
@@ -59,7 +60,7 @@ import {
   statusLabel,
 } from "./utils";
 
-const DEBOUNCE_MS = 5000;
+const DEBOUNCE_MS = 60000;
 const PICKER_DEBOUNCE_MS = 240;
 
 const ListBehaviorShortcuts = Extension.create({
@@ -99,33 +100,6 @@ const ListBehaviorShortcuts = Extension.create({
 
 interface NoteDetailEditorProps {
   noteId: number;
-}
-
-type NoteDraftSnapshot = {
-  title: string;
-  content: string;
-  updatedAt: number;
-};
-
-function parseSqliteTimestamp(value: string): number | null {
-  const matched = value.match(
-    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/,
-  );
-  if (!matched) {
-    return null;
-  }
-  const [, y, m, d, hh, mm, ss, msRaw] = matched;
-  const ms = Number((msRaw ?? "0").padEnd(3, "0"));
-  const parsed = Date.UTC(
-    Number(y),
-    Number(m) - 1,
-    Number(d),
-    Number(hh),
-    Number(mm),
-    Number(ss),
-    ms,
-  );
-  return Number.isNaN(parsed) ? null : parsed;
 }
 
 function computeSnapshotHash(title: string, content: string): string {
@@ -274,13 +248,125 @@ function parseMarkdownToEditorDoc(
   editor: Editor,
   markdown: string,
 ): JSONContent {
+  const toFallbackDoc = (source: string): JSONContent => {
+    const lines = source.replace(/\r\n?/g, "\n").split("\n");
+    const nodes: JSONContent[] = [];
+    let index = 0;
+
+    const pushParagraph = (textLines: string[]) => {
+      const text = textLines.join("\n").trim();
+      if (!text) {
+        return;
+      }
+      nodes.push({
+        type: "paragraph",
+        content: [{ type: "text", text }],
+      });
+    };
+
+    while (index < lines.length) {
+      const line = lines[index] ?? "";
+      if (!line.trim()) {
+        index += 1;
+        continue;
+      }
+
+      const heading = line.match(/^(#{1,6})\s+(.+)$/);
+      if (heading) {
+        nodes.push({
+          type: "heading",
+          attrs: { level: heading[1].length },
+          content: [{ type: "text", text: heading[2] ?? "" }],
+        });
+        index += 1;
+        continue;
+      }
+
+      const bulletItems: string[] = [];
+      while (index < lines.length) {
+        const current = lines[index] ?? "";
+        const matched = current.match(/^\s*[-*]\s+(.+)$/);
+        if (!matched) {
+          break;
+        }
+        bulletItems.push(matched[1] ?? "");
+        index += 1;
+      }
+      if (bulletItems.length > 0) {
+        nodes.push({
+          type: "bulletList",
+          content: bulletItems.map((item) => ({
+            type: "listItem",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: item }] },
+            ],
+          })),
+        });
+        continue;
+      }
+
+      const orderedItems: string[] = [];
+      while (index < lines.length) {
+        const current = lines[index] ?? "";
+        const matched = current.match(/^\s*\d+\.\s+(.+)$/);
+        if (!matched) {
+          break;
+        }
+        orderedItems.push(matched[1] ?? "");
+        index += 1;
+      }
+      if (orderedItems.length > 0) {
+        nodes.push({
+          type: "orderedList",
+          attrs: { start: 1 },
+          content: orderedItems.map((item) => ({
+            type: "listItem",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: item }] },
+            ],
+          })),
+        });
+        continue;
+      }
+
+      const paragraphLines: string[] = [];
+      while (index < lines.length) {
+        const current = lines[index] ?? "";
+        if (!current.trim()) {
+          break;
+        }
+        if (
+          /^(#{1,6})\s+/.test(current) ||
+          /^\s*[-*]\s+/.test(current) ||
+          /^\s*\d+\.\s+/.test(current)
+        ) {
+          if (paragraphLines.length > 0) {
+            break;
+          }
+        }
+        paragraphLines.push(current);
+        index += 1;
+      }
+      pushParagraph(paragraphLines);
+    }
+
+    return nodes.length > 0 ? { type: "doc", content: nodes } : emptyDoc();
+  };
+
   const content = markdown.trim();
   if (!content) {
     return emptyDoc();
   }
   const parsed = editor.markdown?.parse(content);
   if (!parsed || typeof parsed !== "object") {
-    return emptyDoc();
+    const fallback = transformMarkdownReferenceTokens(
+      toFallbackDoc(content),
+    )[0];
+    if (!fallback) {
+      return emptyDoc();
+    }
+    const normalized = normalizeLegacyMathNodes(ensureDocRoot(fallback))[0];
+    return normalized ?? emptyDoc();
   }
   const transformed = transformMarkdownReferenceTokens(
     parsed as JSONContent,
@@ -330,10 +416,7 @@ function noteContentJsonToMarkdown(raw: string): string {
       markdown?: unknown;
       text?: unknown;
     };
-    if (
-      typeof asNode.type !== "string" ||
-      asNode.type.trim().length === 0
-    ) {
+    if (typeof asNode.type !== "string" || asNode.type.trim().length === 0) {
       const fallbackText =
         typeof asNode.content === "string"
           ? asNode.content
@@ -350,6 +433,15 @@ function noteContentJsonToMarkdown(raw: string): string {
   return normalizeMarkdownDisplayMathBlocks(trimmed);
 }
 
+const INVISIBLE_TEXT_PATTERN = /\s|\u200B|\u200C|\u200D|\u2060|\uFEFF/g;
+
+function hasMeaningfulText(value: string | null | undefined): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return value.replace(INVISIBLE_TEXT_PATTERN, "").length > 0;
+}
+
 function docHasMeaningfulContent(value: unknown): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -361,16 +453,20 @@ function docHasMeaningfulContent(value: unknown): boolean {
     content?: unknown[];
   };
   if (node.type === "text") {
-    return Boolean(node.text?.trim());
+    return hasMeaningfulText(node.text);
   }
-  if (node.type === "noteReference" || node.type === "image") {
+  if (node.type === "noteReference") {
     return true;
+  }
+  if (node.type === "image") {
+    const src = node.attrs?.src;
+    return hasMeaningfulText(typeof src === "string" ? src : "");
   }
   if (node.attrs && typeof node.attrs === "object") {
     const attrs = node.attrs;
-    for (const key of ["latex", "value", "text", "src"]) {
+    for (const key of ["latex", "value", "text"]) {
       const raw = attrs[key];
-      if (typeof raw === "string" && raw.trim()) {
+      if (hasMeaningfulText(typeof raw === "string" ? raw : "")) {
         return true;
       }
     }
@@ -388,6 +484,61 @@ function isEffectivelyEmptyDoc(content: string): boolean {
       return false;
     }
     return !docHasMeaningfulContent(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function jsonDeepEqual(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (typeof left !== typeof right) {
+    return false;
+  }
+  if (left === null || right === null) {
+    return left === right;
+  }
+  if (Array.isArray(left)) {
+    if (!Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    for (let i = 0; i < left.length; i += 1) {
+      if (!jsonDeepEqual(left[i], right[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (typeof left !== "object") {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (!(key in rightRecord)) {
+      return false;
+    }
+    if (!jsonDeepEqual(leftRecord[key], rightRecord[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function noteContentsSemanticallyEqual(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  try {
+    const parsedLeft = JSON.parse(left) as unknown;
+    const parsedRight = JSON.parse(right) as unknown;
+    return jsonDeepEqual(parsedLeft, parsedRight);
   } catch {
     return false;
   }
@@ -455,40 +606,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
   const activeSaveSeqRef = useRef<number | null>(null);
   const focusModeRef = useRef(false);
   const centerLineRafRef = useRef<number | null>(null);
-  const draftStorageKey = useMemo(
-    () => `deeplab-note-draft:${noteId}`,
-    [noteId],
-  );
-
-  const persistDraft = useCallback(
-    (draftTitle: string, draftJson: JSONContent) => {
-      if (typeof window === "undefined" || !noteId) {
-        return;
-      }
-      const snapshot: NoteDraftSnapshot = {
-        title: draftTitle,
-        content: JSON.stringify(draftJson),
-        updatedAt: Date.now(),
-      };
-      try {
-        window.localStorage.setItem(draftStorageKey, JSON.stringify(snapshot));
-      } catch {
-        // no-op
-      }
-    },
-    [draftStorageKey, noteId],
-  );
-
-  const clearDraft = useCallback(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    try {
-      window.localStorage.removeItem(draftStorageKey);
-    } catch {
-      // no-op
-    }
-  }, [draftStorageKey]);
 
   const centerCurrentLine = useCallback((activeEditor: Editor) => {
     if (typeof window === "undefined") {
@@ -673,7 +790,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       } else {
         setSaveState("dirty");
       }
-      persistDraft(titleRef.current, activeEditor.getJSON() as JSONContent);
       syncSlashTrigger(activeEditor);
       if (focusModeRef.current) {
         if (centerLineRafRef.current != null) {
@@ -816,6 +932,55 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
     };
   }, [editor]);
 
+  const applySnapshotToEditor = useCallback(
+    (rawContent: string) => {
+      if (!editor) {
+        return {
+          canonicalContent: rawContent,
+          fallbackUsed: false,
+          hydrateFailed: false,
+        };
+      }
+
+      const parsed = safeJsonParse(rawContent) as JSONContent;
+      const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
+      hydratingContentRef.current = true;
+      editor.commands.setContent(normalized);
+
+      let canonicalContent = JSON.stringify(editor.getJSON());
+      let fallbackUsed = false;
+      if (
+        !isEffectivelyEmptyDoc(rawContent) &&
+        isEffectivelyEmptyDoc(canonicalContent)
+      ) {
+        const fallbackMarkdown = noteContentJsonToMarkdown(rawContent).trim();
+        if (fallbackMarkdown) {
+          const fallbackDoc = parseMarkdownToEditorDoc(
+            editor,
+            fallbackMarkdown,
+          );
+          const fallbackContent = JSON.stringify(fallbackDoc);
+          if (!isEffectivelyEmptyDoc(fallbackContent)) {
+            hydratingContentRef.current = true;
+            editor.commands.setContent(fallbackDoc);
+            canonicalContent = JSON.stringify(editor.getJSON());
+            fallbackUsed = true;
+          }
+        }
+      }
+      const hydrateFailed =
+        !isEffectivelyEmptyDoc(rawContent) &&
+        isEffectivelyEmptyDoc(canonicalContent);
+
+      return {
+        canonicalContent,
+        fallbackUsed,
+        hydrateFailed,
+      };
+    },
+    [editor],
+  );
+
   const saveNow = useCallback(
     async (
       source:
@@ -845,7 +1010,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         queuedSourceRef.current = null;
         setError(null);
         setSaveState("saved");
-        clearDraft();
         if (source === "manual" || source === "shortcut") {
           setNotice("内容无变化，已跳过保存。");
         }
@@ -889,7 +1053,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           queuedSourceRef.current === null;
         if (isLatestSnapshot) {
           setSaveState("saved");
-          clearDraft();
         } else {
           setSaveState("dirty");
         }
@@ -941,14 +1104,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         }
       }
     },
-    [
-      buildCurrentSnapshot,
-      clearDraft,
-      loaded,
-      noteId,
-      refreshContext,
-      refreshRevisions,
-    ],
+    [buildCurrentSnapshot, loaded, noteId, refreshContext, refreshRevisions],
   );
 
   useEffect(() => {
@@ -1014,48 +1170,8 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
         }
-        let targetTitle = detail.title;
-        let targetContent = detail.content;
-        let recoveredDraft = false;
-        if (typeof window !== "undefined") {
-          try {
-            const rawDraft = window.localStorage.getItem(draftStorageKey);
-            if (rawDraft) {
-              const draft = JSON.parse(rawDraft) as Partial<NoteDraftSnapshot>;
-              if (
-                typeof draft.updatedAt === "number" &&
-                typeof draft.content === "string"
-              ) {
-                const storedTs = parseSqliteTimestamp(detail.updatedAt);
-                const parsedDraft = safeJsonParse(draft.content) as JSONContent;
-                const normalizedDraft =
-                  normalizeLegacyMathNodes(parsedDraft)[0] ?? parsedDraft;
-                const normalizedDraftContent = JSON.stringify(normalizedDraft);
-                const draftLooksEmpty =
-                  isEffectivelyEmptyDoc(normalizedDraftContent);
-                if (draftLooksEmpty) {
-                  try {
-                    window.localStorage.removeItem(draftStorageKey);
-                  } catch {
-                    // no-op
-                  }
-                } else if (
-                  storedTs != null &&
-                  draft.updatedAt > storedTs + 1000
-                ) {
-                  targetTitle =
-                    typeof draft.title === "string" && draft.title.trim()
-                      ? draft.title
-                      : detail.title;
-                  targetContent = normalizedDraftContent;
-                  recoveredDraft = true;
-                }
-              }
-            }
-          } catch {
-            // no-op
-          }
-        }
+        const targetTitle = detail.title;
+        const targetContent = detail.content;
         setTitle(targetTitle);
         titleRef.current = targetTitle;
         setStoredUpdatedAt(detail.updatedAt);
@@ -1064,21 +1180,33 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           detail.title.trim() || "未命名笔记",
           detail.content,
         );
-        const parsed = safeJsonParse(targetContent) as JSONContent;
-        const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
-        hydratingContentRef.current = true;
-        editor.commands.setContent(normalized);
+        const { canonicalContent, fallbackUsed, hydrateFailed } =
+          applySnapshotToEditor(targetContent);
+        const requiresCanonicalSave =
+          fallbackUsed ||
+          !noteContentsSemanticallyEqual(targetContent, canonicalContent);
         latestSnapshotHashRef.current = computeSnapshotHash(
           targetTitle.trim() || "未命名笔记",
-          targetContent,
+          canonicalContent,
         );
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
         }
         setLoaded(true);
-        setSaveState(recoveredDraft ? "dirty" : "saved");
-        setError(null);
-        setNotice(recoveredDraft ? "已恢复本地草稿，等待自动保存。" : null);
+        if (hydrateFailed) {
+          conflictLockRef.current = true;
+          setSaveState("failed");
+          setError("该快照结构无法在当前编辑器中恢复，请尝试其他历史版本。");
+          setNotice(null);
+        } else {
+          setSaveState(requiresCanonicalSave ? "dirty" : "saved");
+          setError(null);
+          setNotice(
+            requiresCanonicalSave
+              ? "检测到旧版快照结构，已转换为当前可编辑格式，等待保存。"
+              : null,
+          );
+        }
       } catch (loadError) {
         if (loadingSeqRef.current !== currentLoadSeq) {
           return;
@@ -1092,7 +1220,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         await refreshRevisions();
       }
     })();
-  }, [draftStorageKey, editor, noteId, refreshContext, refreshRevisions]);
+  }, [applySnapshotToEditor, editor, noteId, refreshContext, refreshRevisions]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -1100,37 +1228,24 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         document.visibilityState === "hidden" &&
         saveStateRef.current === "dirty"
       ) {
-        const snapshot = buildCurrentSnapshot();
-        if (snapshot) {
-          persistDraft(titleRef.current, snapshot.json as JSONContent);
-        }
         void saveNow("visibility");
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () =>
       document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [buildCurrentSnapshot, persistDraft, saveNow]);
+  }, [saveNow]);
 
   useEffect(() => {
     const onPageHide = () => {
       if (saveStateRef.current === "saved") {
         return;
       }
-      const snapshot = buildCurrentSnapshot();
-      if (!snapshot) {
-        return;
-      }
-      persistDraft(titleRef.current, snapshot.json as JSONContent);
       void saveNow("visibility");
     };
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (saveStateRef.current === "saved") {
         return;
-      }
-      const snapshot = buildCurrentSnapshot();
-      if (snapshot) {
-        persistDraft(titleRef.current, snapshot.json as JSONContent);
       }
       void saveNow("visibility");
       event.preventDefault();
@@ -1142,7 +1257,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [buildCurrentSnapshot, persistDraft, saveNow]);
+  }, [saveNow]);
 
   useEffect(() => {
     if (saveState !== "dirty" || conflictLockRef.current) {
@@ -1395,14 +1510,11 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
           nextTitle.trim() || "未命名笔记",
           serialized,
         );
-        persistDraft(nextTitle, importedDoc);
         if (activeSaveSeqRef.current !== null) {
           queuedSourceRef.current = "manual";
         }
         if (conflictLockRef.current) {
-          setNotice(
-            "Markdown 已导入并写入本地草稿，但当前处于冲突锁定状态，请先处理冲突。",
-          );
+          setNotice("Markdown 已导入，但当前处于冲突锁定状态，请先处理冲突。");
           return;
         }
         setSaveState("dirty");
@@ -1415,7 +1527,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         );
       }
     })();
-  }, [editor, persistDraft]);
+  }, [editor]);
 
   const previewRevision = useCallback(
     async (revisionId: number) => {
@@ -1485,44 +1597,51 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
       setError(null);
       setNotice(null);
       try {
-        const detail = await getNoteRevisionDetail(noteId, revisionId);
-        const restoredMarkdown = noteContentJsonToMarkdown(detail.content);
-        let restoredDoc = parseMarkdownToEditorDoc(editor, restoredMarkdown);
-        if (isEffectivelyEmptyDoc(JSON.stringify(restoredDoc))) {
-          const fallbackParsed = safeJsonParse(detail.content) as JSONContent;
-          const fallbackNormalized =
-            normalizeLegacyMathNodes(fallbackParsed)[0] ?? fallbackParsed;
-          if (!isEffectivelyEmptyDoc(JSON.stringify(fallbackNormalized))) {
-            restoredDoc = fallbackNormalized;
-          }
-        }
-        const response = await updateNoteContent(noteId, {
-          title: detail.title.trim() || "未命名笔记",
-          content: JSON.stringify(restoredDoc),
-          expectedUpdatedAt: storedUpdatedAtRef.current,
-          saveSource: "restore",
-        });
+        const response = await restoreNoteRevision(
+          noteId,
+          revisionId,
+          storedUpdatedAtRef.current,
+        );
         setTitle(response.detail.title);
         titleRef.current = response.detail.title;
         setStoredUpdatedAt(response.detail.updatedAt);
         storedUpdatedAtRef.current = response.detail.updatedAt;
-        const parsed = safeJsonParse(response.detail.content) as JSONContent;
-        const normalized = normalizeLegacyMathNodes(parsed)[0] ?? parsed;
-        hydratingContentRef.current = true;
-        editor.commands.setContent(normalized);
-        latestSnapshotHashRef.current = response.savedHash;
+        const { canonicalContent, fallbackUsed, hydrateFailed } =
+          applySnapshotToEditor(response.detail.content);
+        const requiresCanonicalSave =
+          fallbackUsed ||
+          !noteContentsSemanticallyEqual(
+            response.detail.content,
+            canonicalContent,
+          );
+        latestSnapshotHashRef.current = computeSnapshotHash(
+          response.detail.title.trim() || "未命名笔记",
+          canonicalContent,
+        );
         savedSnapshotHashRef.current = response.savedHash;
         queuedSourceRef.current = null;
         activeSaveSeqRef.current = null;
         conflictLockRef.current = false;
-        setSaveState("saved");
-        clearDraft();
+        if (hydrateFailed) {
+          conflictLockRef.current = true;
+          setSaveState("failed");
+          setError("该历史快照结构无法在当前编辑器中恢复，请尝试其他版本。");
+          setNotice(null);
+          return;
+        }
+        setSaveState(requiresCanonicalSave ? "dirty" : "saved");
         setConflictStoredVersion(null);
         setShowConflictDiff(false);
-        if (response.skippedLinks.length > 0) {
+        if (response.skippedLinks.length > 0 && requiresCanonicalSave) {
+          setNotice(
+            `已恢复历史版本，忽略 ${response.skippedLinks.length} 个失效引用，并检测到旧快照结构，等待保存修复。`,
+          );
+        } else if (response.skippedLinks.length > 0) {
           setNotice(
             `已从历史版本恢复并保存，忽略 ${response.skippedLinks.length} 个失效引用。`,
           );
+        } else if (requiresCanonicalSave) {
+          setNotice("已恢复历史版本，检测到旧快照结构，等待保存修复。");
         } else {
           setNotice("已从历史版本恢复并保存。");
         }
@@ -1538,7 +1657,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
         setRestoringRevisionId(null);
       }
     },
-    [clearDraft, editor, noteId, refreshContext, refreshRevisions],
+    [applySnapshotToEditor, editor, noteId, refreshContext, refreshRevisions],
   );
 
   const localDraftPreview = useMemo(() => {
@@ -1657,7 +1776,6 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
                       nextTitle.trim() || "未命名笔记",
                       content,
                     );
-                    persistDraft(nextTitle, json);
                   }
                   if (activeSaveSeqRef.current !== null) {
                     queuedSourceRef.current = "autosave";
@@ -1727,7 +1845,7 @@ export function NoteDetailEditor({ noteId }: NoteDetailEditorProps) {
                   <div className="mt-3 grid gap-3 lg:grid-cols-2">
                     <div>
                       <p className="mb-1 text-[11px] text-[#ffb4c9]">
-                        本地草稿
+                        当前编辑内容
                       </p>
                       <pre className="max-h-56 overflow-auto rounded-xl border border-[#4a2d37] bg-[#160d12] p-2 text-[11px]">
                         {localDraftPreview}

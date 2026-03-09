@@ -5,6 +5,7 @@ import {
   Plugin,
   PluginKey,
   TextSelection,
+  type Transaction,
 } from "@tiptap/pm/state";
 import Suggestion, {
   exitSuggestion,
@@ -25,8 +26,161 @@ type MathCompletionItem = {
   cursorOffset?: number;
 };
 
+type MathMenuPlacementInput = {
+  anchorRect: Pick<DOMRect, "left" | "top" | "bottom">;
+  menuSize: {
+    width: number;
+    height: number;
+  };
+  viewportSize: {
+    width: number;
+    height: number;
+  };
+  gap?: number;
+  margin?: number;
+  minHeight?: number;
+};
+
+type MathMenuPlacement = {
+  side: "bottom";
+  left: number;
+  top: number;
+  maxHeight: number;
+};
+
 const INPUT_ASSIST_PLUGIN_KEY = new PluginKey("mathInputAssist");
 const MATH_COMMAND_PLUGIN_KEY = new PluginKey("mathCommandSuggestion");
+const MATH_MENU_GAP = 8;
+const MATH_MENU_MARGIN = 8;
+const MATH_MENU_MIN_HEIGHT = 96;
+const MATH_MENU_MIN_WIDTH = 260;
+const MATH_MENU_ESTIMATED_HEIGHT = 220;
+
+function clampValue(value: number, min: number, max: number): number {
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+}
+
+function caretRectFromEditor(
+  editor: Editor | null | undefined,
+): Pick<DOMRect, "left" | "top" | "bottom"> | null {
+  if (!editor) {
+    return null;
+  }
+  try {
+    const cursorPos = editor.state.selection.from;
+    const coords = editor.view.coordsAtPos(cursorPos);
+    return {
+      left: coords.left,
+      top: coords.top,
+      bottom: coords.bottom,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function caretRectFromDomSelection(
+  editor: Editor | null | undefined,
+): Pick<DOMRect, "left" | "top" | "bottom"> | null {
+  if (!editor) {
+    return null;
+  }
+
+  const dom = editor.view.dom;
+  const domSelection = dom.ownerDocument.getSelection();
+  if (!domSelection || domSelection.rangeCount === 0) {
+    return null;
+  }
+
+  const { anchorNode } = domSelection;
+  if (!anchorNode || !dom.contains(anchorNode)) {
+    return null;
+  }
+
+  try {
+    const range = domSelection.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rect = range.getBoundingClientRect();
+    if (!Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) {
+      return null;
+    }
+    if (rect.width === 0 && rect.height === 0 && rect.top === 0) {
+      return null;
+    }
+    return {
+      left: rect.left,
+      top: rect.top,
+      bottom: rect.bottom,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function scrollContainersFromEditor(
+  editor: Editor | null | undefined,
+): HTMLElement[] {
+  if (!editor || typeof window === "undefined") {
+    return [];
+  }
+
+  const containers: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  let node = editor.view.dom.parentElement;
+
+  while (node) {
+    const style = window.getComputedStyle(node);
+    const canScrollY =
+      /(auto|scroll|overlay)/.test(style.overflowY) &&
+      node.scrollHeight > node.clientHeight;
+    const canScrollX =
+      /(auto|scroll|overlay)/.test(style.overflowX) &&
+      node.scrollWidth > node.clientWidth;
+    if ((canScrollY || canScrollX) && !seen.has(node)) {
+      seen.add(node);
+      containers.push(node);
+    }
+    node = node.parentElement;
+  }
+
+  return containers;
+}
+
+export function calculateMathMenuPlacement({
+  anchorRect,
+  menuSize,
+  viewportSize,
+  gap = MATH_MENU_GAP,
+  margin = MATH_MENU_MARGIN,
+  minHeight = MATH_MENU_MIN_HEIGHT,
+}: MathMenuPlacementInput): MathMenuPlacement {
+  const safeViewportWidth = Math.max(viewportSize.width, margin * 2 + 1);
+  const safeViewportHeight = Math.max(viewportSize.height, margin * 2 + 1);
+  const safeMenuWidth = Math.max(menuSize.width, MATH_MENU_MIN_WIDTH);
+
+  const availableBelow = Math.max(
+    0,
+    safeViewportHeight - anchorRect.bottom - gap - margin,
+  );
+  const maxHeight = Math.max(minHeight, Math.floor(availableBelow));
+
+  const leftMin = margin;
+  const leftMax = Math.max(leftMin, safeViewportWidth - safeMenuWidth - margin);
+  const left = clampValue(anchorRect.left, leftMin, leftMax);
+
+  return {
+    side: "bottom",
+    left,
+    top: anchorRect.bottom + gap,
+    maxHeight,
+  };
+}
 
 const BRACKET_PAIRS: BracketPair[] = [
   { open: "(", close: ")" },
@@ -321,6 +475,17 @@ type DisplayFenceBlockMatch = {
   contentCursor: number | null;
 };
 
+type CompletionSuppressionRange = {
+  from: number;
+  to: number;
+};
+
+type InputAssistPluginMeta = {
+  normalizedDisplayEnter?: boolean;
+  completionInsertedRange?: CompletionSuppressionRange;
+  suppressFenceRedirect?: boolean;
+};
+
 type MathModeBeforeCursor = {
   mode: "none" | "inline" | "display";
   openingIndex: number | null;
@@ -346,6 +511,37 @@ function parseDisplayBlockParagraph(
   return { lines: normalized.split("\n") };
 }
 
+type SiblingNodeInfo = {
+  index: number;
+  pos: number;
+  node: {
+    type: { name: string };
+    textContent: string;
+    nodeSize: number;
+  };
+};
+
+function findSiblingFenceIndex(
+  siblings: SiblingNodeInfo[],
+  fromIndex: number,
+  step: -1 | 1,
+): number | null {
+  for (
+    let index = fromIndex + step;
+    index >= 0 && index < siblings.length;
+    index += step
+  ) {
+    const sibling = siblings[index];
+    if (!sibling || sibling.node.type.name !== "paragraph") {
+      return null;
+    }
+    if (isDisplayMathFenceText(sibling.node.textContent)) {
+      return index;
+    }
+  }
+  return null;
+}
+
 function findDisplayFenceBlockMatch(
   state: EditorState,
 ): DisplayFenceBlockMatch | null {
@@ -353,116 +549,168 @@ function findDisplayFenceBlockMatch(
     return null;
   }
 
-  const paragraphs: Array<{ pos: number; text: string; nodeSize: number }> = [];
-  state.doc.descendants((node, pos) => {
-    if (node.type.name !== "paragraph") {
-      return;
-    }
-    paragraphs.push({
-      pos,
-      text: node.textContent.trim(),
-      nodeSize: node.nodeSize,
+  const { $from } = state.selection;
+  if ($from.depth < 1) {
+    return null;
+  }
+
+  const parentDepth = $from.depth - 1;
+  const parent = $from.node(parentDepth);
+  const currentIndex = $from.index(parentDepth);
+  const parentStart = $from.start(parentDepth);
+  const siblings: SiblingNodeInfo[] = [];
+
+  let positionCursor = parentStart;
+  for (let index = 0; index < parent.childCount; index += 1) {
+    const child = parent.child(index);
+    siblings.push({
+      index,
+      pos: positionCursor,
+      node: child as unknown as {
+        type: { name: string };
+        textContent: string;
+        nodeSize: number;
+      },
     });
-  });
+    positionCursor += child.nodeSize;
+  }
 
-  const fencePos = state.selection.$from.before();
-  for (let index = 0; index < paragraphs.length; index += 1) {
-    const opening = paragraphs[index];
-    if (!opening || opening.text !== "$$") {
-      continue;
-    }
+  const current = siblings[currentIndex];
+  if (
+    !current ||
+    current.node.type.name !== "paragraph" ||
+    !isDisplayMathFenceText(current.node.textContent)
+  ) {
+    return null;
+  }
 
-    let closingIndex = -1;
-    for (let probe = index + 1; probe < paragraphs.length; probe += 1) {
-      const candidate = paragraphs[probe];
-      if (candidate?.text === "$$") {
-        closingIndex = probe;
-        break;
-      }
+  let openingIndex = currentIndex;
+  let closingIndex = findSiblingFenceIndex(siblings, currentIndex, 1);
+  if (closingIndex == null) {
+    const previousOpening = findSiblingFenceIndex(siblings, currentIndex, -1);
+    if (previousOpening == null) {
+      return null;
     }
-    if (closingIndex === -1) {
-      continue;
-    }
+    openingIndex = previousOpening;
+    closingIndex = currentIndex;
+  }
 
-    const closing = paragraphs[closingIndex];
-    if (!closing) {
-      index = closingIndex;
-      continue;
-    }
-    if (opening.pos !== fencePos && closing.pos !== fencePos) {
-      index = closingIndex;
-      continue;
-    }
+  const opening = siblings[openingIndex];
+  const closing = siblings[closingIndex];
+  if (!opening || !closing) {
+    return null;
+  }
 
-    for (
-      let contentIndex = closingIndex - 1;
-      contentIndex > index;
-      contentIndex -= 1
+  for (
+    let contentIndex = closingIndex - 1;
+    contentIndex > openingIndex;
+    contentIndex -= 1
+  ) {
+    const content = siblings[contentIndex];
+    if (
+      !content ||
+      content.node.type.name !== "paragraph" ||
+      isDisplayMathFenceText(content.node.textContent)
     ) {
-      const content = paragraphs[contentIndex];
-      if (!content || content.text === "$$") {
-        continue;
-      }
-      return {
-        blockFrom: opening.pos,
-        blockTo: closing.pos + closing.nodeSize,
-        contentCursor: content.pos + content.nodeSize - 1,
-      };
+      continue;
     }
     return {
       blockFrom: opening.pos,
-      blockTo: closing.pos + closing.nodeSize,
-      contentCursor: null,
+      blockTo: closing.pos + closing.node.nodeSize,
+      contentCursor: content.pos + content.node.nodeSize - 1,
     };
   }
 
-  return null;
+  return {
+    blockFrom: opening.pos,
+    blockTo: closing.pos + closing.node.nodeSize,
+    contentCursor: null,
+  };
 }
 
-function findNearestDisplayContentCursor(state: EditorState): number | null {
-  const paragraphs: Array<{ pos: number; text: string; nodeSize: number }> = [];
-  state.doc.descendants((node, pos) => {
-    if (node.type.name !== "paragraph") {
-      return;
-    }
-    paragraphs.push({
-      pos,
-      text: node.textContent.trim(),
-      nodeSize: node.nodeSize,
-    });
-  });
-
-  const selectionFrom = state.selection.from;
-  let bestMatch: { cursor: number; distance: number } | null = null;
-  for (let index = 0; index <= paragraphs.length - 3; index += 1) {
-    const opening = paragraphs[index];
-    const middle = paragraphs[index + 1];
-    const closing = paragraphs[index + 2];
-    if (!opening || !middle || !closing) {
-      continue;
-    }
-    if (
-      opening.text !== "$$" ||
-      closing.text !== "$$" ||
-      middle.text === "$$"
-    ) {
-      continue;
-    }
-
-    const cursor = middle.pos + 1;
-    const blockStart = opening.pos;
-    const blockEnd = closing.pos + closing.nodeSize;
-    const distance =
-      selectionFrom < blockStart
-        ? blockStart - selectionFrom
-        : selectionFrom > blockEnd
-          ? selectionFrom - blockEnd
-          : 0;
-    if (!bestMatch || distance < bestMatch.distance) {
-      bestMatch = { cursor, distance };
-    }
+function normalizeCompletionSuppressionRange(
+  range: CompletionSuppressionRange | null | undefined,
+  maxDocPosition: number,
+): CompletionSuppressionRange | null {
+  if (!range) {
+    return null;
   }
-  return bestMatch?.cursor ?? null;
+  const safeMax = Math.max(1, maxDocPosition);
+  const from = Math.round(clampValue(range.from, 1, safeMax));
+  const to = Math.round(clampValue(range.to, from, safeMax));
+  if (from > to) {
+    return null;
+  }
+  return { from, to };
+}
+
+function isSelectionInsideCompletionSuppressionRange(
+  state: EditorState,
+  range: CompletionSuppressionRange | null,
+): boolean {
+  if (!range || !state.selection.empty) {
+    return false;
+  }
+  const cursor = state.selection.from;
+  return cursor >= range.from && cursor <= range.to;
+}
+
+function inputAssistMetaFromTransaction(
+  transaction: Transaction,
+): InputAssistPluginMeta | undefined {
+  return transaction.getMeta(INPUT_ASSIST_PLUGIN_KEY) as
+    | InputAssistPluginMeta
+    | undefined;
+}
+
+function updateCompletionSuppressionRangeFromTransaction(
+  transaction: Transaction,
+  currentRange: CompletionSuppressionRange | null,
+  maxDocPosition: number,
+): CompletionSuppressionRange | null {
+  const meta = inputAssistMetaFromTransaction(transaction);
+  const completionInsertedRange = normalizeCompletionSuppressionRange(
+    meta?.completionInsertedRange,
+    maxDocPosition,
+  );
+  if (completionInsertedRange) {
+    return completionInsertedRange;
+  }
+  if (transaction.docChanged) {
+    return null;
+  }
+  if (!currentRange) {
+    return null;
+  }
+
+  return normalizeCompletionSuppressionRange(
+    {
+      from: transaction.mapping.map(currentRange.from, -1),
+      to: transaction.mapping.map(currentRange.to, 1),
+    },
+    maxDocPosition,
+  );
+}
+
+function hasCompletionInsertedRangeMeta(transaction: Transaction): boolean {
+  const meta = inputAssistMetaFromTransaction(transaction);
+  return meta?.completionInsertedRange != null;
+}
+
+function hasSuppressFenceRedirectMeta(transaction: Transaction): boolean {
+  const meta = inputAssistMetaFromTransaction(transaction);
+  return meta?.suppressFenceRedirect === true;
+}
+
+function shouldSuppressMathSuggestion(
+  state: EditorState,
+  transaction: Transaction,
+  range: CompletionSuppressionRange | null,
+): boolean {
+  if (transaction.docChanged || hasCompletionInsertedRangeMeta(transaction)) {
+    return false;
+  }
+  return isSelectionInsideCompletionSuppressionRange(state, range);
 }
 
 function isSelectionOnDisplayFenceParagraph(state: EditorState): boolean {
@@ -715,8 +963,12 @@ function applyTextAndCursor(
   to: number,
   text: string,
   cursorOffset: number,
+  meta?: InputAssistPluginMeta,
 ) {
   const tr = editor.state.tr.insertText(text, from, to);
+  if (meta) {
+    tr.setMeta(INPUT_ASSIST_PLUGIN_KEY, meta);
+  }
   const cursorPos = from + cursorOffset;
   tr.setSelection(TextSelection.create(tr.doc, cursorPos));
   editor.view.dispatch(tr);
@@ -743,6 +995,8 @@ export const MathInputAssist = Extension.create({
   priority: 1000,
 
   addProseMirrorPlugins() {
+    let completionSuppressionRange: CompletionSuppressionRange | null = null;
+
     const inputAssistPlugin = new Plugin({
       key: INPUT_ASSIST_PLUGIN_KEY,
       props: {
@@ -817,7 +1071,7 @@ export const MathInputAssist = Extension.create({
                 );
                 tr.setMeta(INPUT_ASSIST_PLUGIN_KEY, {
                   normalizedDisplayEnter: true,
-                });
+                } satisfies InputAssistPluginMeta);
                 tr.setSelection(
                   TextSelection.create(tr.doc, Math.max(cursorPos, 1)),
                 );
@@ -857,6 +1111,9 @@ export const MathInputAssist = Extension.create({
                   tr.setSelection(
                     TextSelection.create(tr.doc, Math.max(cursorPos, 1)),
                   );
+                  tr.setMeta(INPUT_ASSIST_PLUGIN_KEY, {
+                    suppressFenceRedirect: true,
+                  } satisfies InputAssistPluginMeta);
                   view.dispatch(tr);
                   return true;
                 }
@@ -868,6 +1125,7 @@ export const MathInputAssist = Extension.create({
                 from + 1,
                 "$$\n\n$$",
                 3,
+                { suppressFenceRedirect: true },
               );
               return true;
             }
@@ -880,7 +1138,9 @@ export const MathInputAssist = Extension.create({
               return true;
             }
 
-            applyTextAndCursor(this.editor, from, from, "$$", 1);
+            applyTextAndCursor(this.editor, from, from, "$$", 1, {
+              suppressFenceRedirect: true,
+            });
             return true;
           }
 
@@ -914,12 +1174,35 @@ export const MathInputAssist = Extension.create({
         },
       },
       appendTransaction: (transactions, _oldState, newState) => {
+        const maxDocPosition = Math.max(1, newState.doc.nodeSize - 2);
+        for (const transaction of transactions) {
+          completionSuppressionRange =
+            updateCompletionSuppressionRangeFromTransaction(
+              transaction,
+              completionSuppressionRange,
+              maxDocPosition,
+            );
+        }
+        if (
+          completionSuppressionRange &&
+          !isSelectionInsideCompletionSuppressionRange(
+            newState,
+            completionSuppressionRange,
+          )
+        ) {
+          completionSuppressionRange = null;
+        }
+
         const hasDocChange = transactions.some((tr) => tr.docChanged);
         const hasDocChangeOrSelectionSet = transactions.some(
           (tr) => tr.docChanged || tr.selectionSet,
         );
+        const hasSuppressFenceRedirect = transactions.some((tr) =>
+          hasSuppressFenceRedirectMeta(tr),
+        );
         if (
           !hasDocChangeOrSelectionSet ||
+          hasSuppressFenceRedirect ||
           !isSelectionOnDisplayFenceParagraph(newState)
         ) {
           return null;
@@ -946,15 +1229,7 @@ export const MathInputAssist = Extension.create({
           }
           return null;
         }
-
-        const cursor = findNearestDisplayContentCursor(newState);
-        if (cursor == null || newState.selection.from === cursor) {
-          return null;
-        }
-
-        return newState.tr.setSelection(
-          TextSelection.create(newState.doc, cursor),
-        );
+        return null;
       },
     });
 
@@ -967,6 +1242,20 @@ export const MathInputAssist = Extension.create({
         allowedPrefixes: null,
         findSuggestionMatch: findMathCommandMatch,
         allow: ({ state }) => isInMathContext(state),
+        shouldShow: ({ editor, transaction }) => {
+          const maxDocPosition = Math.max(1, editor.state.doc.nodeSize - 2);
+          completionSuppressionRange =
+            updateCompletionSuppressionRangeFromTransaction(
+              transaction,
+              completionSuppressionRange,
+              maxDocPosition,
+            );
+          return !shouldSuppressMathSuggestion(
+            editor.state,
+            transaction,
+            completionSuppressionRange,
+          );
+        },
         items: ({ query }) => {
           const normalized = query.trim().toLowerCase();
           if (!normalized) {
@@ -979,11 +1268,18 @@ export const MathInputAssist = Extension.create({
         command: ({ editor, range, props }) => {
           const insertText = props.insertText;
           const cursorOffset = props.cursorOffset ?? insertText.length;
+          const completionInsertedRange: CompletionSuppressionRange = {
+            from: range.from,
+            to: range.from + insertText.length,
+          };
           const tr = editor.state.tr.insertText(
             insertText,
             range.from,
             range.to,
           );
+          tr.setMeta(INPUT_ASSIST_PLUGIN_KEY, {
+            completionInsertedRange,
+          } satisfies InputAssistPluginMeta);
           tr.setSelection(
             TextSelection.create(tr.doc, range.from + cursorOffset),
           );
@@ -995,6 +1291,23 @@ export const MathInputAssist = Extension.create({
           let popup: HTMLDivElement | null = null;
           let items: MathCompletionItem[] = [];
           let command: ((item: MathCompletionItem) => void) | null = null;
+          let latestClientRect: (() => DOMRect | null) | null | undefined =
+            null;
+          let latestEditor: Editor | null | undefined = null;
+          let positionRafId: number | null = null;
+          let removePositionListeners: (() => void) | null = null;
+          const scrollListenerOptions: AddEventListenerOptions = {
+            capture: true,
+            passive: true,
+          };
+
+          const clearScheduledPositionSync = () => {
+            if (positionRafId == null) {
+              return;
+            }
+            window.cancelAnimationFrame(positionRafId);
+            positionRafId = null;
+          };
 
           const renderList = () => {
             if (!popup) {
@@ -1017,16 +1330,125 @@ export const MathInputAssist = Extension.create({
 
           const updatePosition = (
             clientRect: (() => DOMRect | null) | null | undefined,
+            editor: Editor | null | undefined,
           ) => {
             if (!popup) {
               return;
             }
-            const rect = clientRect?.();
+            const fallbackRect = clientRect?.();
+            const caretRect =
+              caretRectFromEditor(editor) ?? caretRectFromDomSelection(editor);
+            const rect = caretRect ?? fallbackRect;
             if (!rect) {
               return;
             }
-            popup.style.left = `${rect.left}px`;
-            popup.style.top = `${rect.bottom + 8}px`;
+            const viewportWidth =
+              window.innerWidth || document.documentElement.clientWidth || 0;
+            const viewportHeight =
+              window.innerHeight || document.documentElement.clientHeight || 0;
+            const measuredRect = popup.getBoundingClientRect();
+            const placement = calculateMathMenuPlacement({
+              anchorRect: {
+                left: rect.left,
+                top: rect.top,
+                bottom: rect.bottom,
+              },
+              menuSize: {
+                width:
+                  measuredRect.width ||
+                  popup.offsetWidth ||
+                  MATH_MENU_MIN_WIDTH,
+                height:
+                  measuredRect.height ||
+                  popup.offsetHeight ||
+                  MATH_MENU_ESTIMATED_HEIGHT,
+              },
+              viewportSize: {
+                width: viewportWidth,
+                height: viewportHeight,
+              },
+            });
+
+            popup.style.left = `${placement.left}px`;
+            popup.style.maxHeight = `${placement.maxHeight}px`;
+            popup.style.bottom = "";
+            popup.style.top = `${placement.top}px`;
+          };
+
+          const syncPosition = () => {
+            updatePosition(latestClientRect, latestEditor);
+          };
+
+          const schedulePositionSync = () => {
+            if (positionRafId != null) {
+              return;
+            }
+            positionRafId = window.requestAnimationFrame(() => {
+              positionRafId = null;
+              syncPosition();
+            });
+          };
+
+          const ensureWindowListeners = () => {
+            if (removePositionListeners) {
+              return;
+            }
+            const ownerDocument =
+              latestEditor?.view.dom.ownerDocument ?? document;
+            const ownerWindow = ownerDocument.defaultView ?? window;
+            const scrollTargets: EventTarget[] = [
+              ownerWindow,
+              ownerDocument,
+              ownerDocument.documentElement,
+            ];
+            if (ownerDocument.body) {
+              scrollTargets.push(ownerDocument.body);
+            }
+            for (const container of scrollContainersFromEditor(latestEditor)) {
+              scrollTargets.push(container);
+            }
+            const uniqueScrollTargets = Array.from(new Set(scrollTargets));
+            for (const target of uniqueScrollTargets) {
+              target.addEventListener(
+                "scroll",
+                schedulePositionSync,
+                scrollListenerOptions,
+              );
+            }
+            ownerWindow.addEventListener("resize", schedulePositionSync);
+            ownerWindow.visualViewport?.addEventListener(
+              "scroll",
+              schedulePositionSync,
+            );
+            ownerWindow.visualViewport?.addEventListener(
+              "resize",
+              schedulePositionSync,
+            );
+
+            removePositionListeners = () => {
+              for (const target of uniqueScrollTargets) {
+                target.removeEventListener(
+                  "scroll",
+                  schedulePositionSync,
+                  scrollListenerOptions,
+                );
+              }
+              ownerWindow.removeEventListener("resize", schedulePositionSync);
+              ownerWindow.visualViewport?.removeEventListener(
+                "scroll",
+                schedulePositionSync,
+              );
+              ownerWindow.visualViewport?.removeEventListener(
+                "resize",
+                schedulePositionSync,
+              );
+            };
+          };
+
+          const teardownWindowListeners = () => {
+            removePositionListeners?.();
+            removePositionListeners = null;
+            clearScheduledPositionSync();
           };
 
           const onMouseDown = (event: MouseEvent) => {
@@ -1051,21 +1473,26 @@ export const MathInputAssist = Extension.create({
               selectedIndex = 0;
               items = props.items;
               command = props.command;
+              latestClientRect = props.clientRect;
+              latestEditor = props.editor;
               popup = document.createElement("div");
               popup.className = "note-math-command-menu";
               popup.addEventListener("mousedown", onMouseDown);
               document.body.appendChild(popup);
-              updatePosition(props.clientRect);
               renderList();
+              ensureWindowListeners();
+              syncPosition();
             },
             onUpdate: (props) => {
               items = props.items;
               command = props.command;
+              latestClientRect = props.clientRect;
+              latestEditor = props.editor;
               if (selectedIndex >= items.length) {
                 selectedIndex = Math.max(0, items.length - 1);
               }
-              updatePosition(props.clientRect);
               renderList();
+              syncPosition();
             },
             onKeyDown: (props: SuggestionKeyDownProps) => {
               if (props.event.key === "Escape") {
@@ -1097,6 +1524,7 @@ export const MathInputAssist = Extension.create({
               return false;
             },
             onExit: () => {
+              teardownWindowListeners();
               if (popup) {
                 popup.removeEventListener("mousedown", onMouseDown);
                 popup.remove();
@@ -1104,6 +1532,8 @@ export const MathInputAssist = Extension.create({
               popup = null;
               items = [];
               command = null;
+              latestClientRect = null;
+              latestEditor = null;
             },
           };
         },

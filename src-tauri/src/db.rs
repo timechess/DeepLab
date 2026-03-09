@@ -14,7 +14,6 @@ use crate::{
     WorkReportListItemDto, WorkflowListItem,
   },
 };
-use chrono::{Duration, NaiveDateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{HashMap, HashSet};
@@ -1043,6 +1042,92 @@ mod tests {
   use sqlx::sqlite::SqlitePoolOptions;
   use tokio::runtime::Builder;
 
+  fn setup_runtime() -> tokio::runtime::Runtime {
+    match Builder::new_current_thread().enable_all().build() {
+      Ok(value) => value,
+      Err(error) => panic!("failed to build tokio runtime: {error}"),
+    }
+  }
+
+  async fn setup_note_revision_test_pool() -> sqlx::SqlitePool {
+    let pool = match SqlitePoolOptions::new()
+      .max_connections(1)
+      .connect("sqlite::memory:")
+      .await
+    {
+      Ok(value) => value,
+      Err(error) => panic!("failed to open sqlite memory pool: {error}"),
+    };
+
+    if let Err(error) = sqlx::query(
+      "CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        content_hash TEXT NOT NULL DEFAULT '',
+        createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )",
+    )
+    .execute(&pool)
+    .await
+    {
+      panic!("failed to create notes table: {error}");
+    }
+
+    if let Err(error) = sqlx::query(
+      "CREATE TABLE note_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        note_id INTEGER NOT NULL,
+        link_type TEXT NOT NULL,
+        target_paper_id TEXT,
+        target_task_id INTEGER,
+        target_note_id INTEGER,
+        target_work_report_date TEXT,
+        createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )",
+    )
+    .execute(&pool)
+    .await
+    {
+      panic!("failed to create note_links table: {error}");
+    }
+
+    if let Err(error) = sqlx::query(
+      "CREATE TABLE note_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        note_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        content_length INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        content_hash TEXT NOT NULL DEFAULT '',
+        snapshot_size INTEGER NOT NULL DEFAULT 0
+      )",
+    )
+    .execute(&pool)
+    .await
+    {
+      panic!("failed to create note_revisions table: {error}");
+    }
+
+    pool
+  }
+
+  fn build_content(text: &str) -> String {
+    json!({
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": text }]
+        }
+      ]
+    })
+    .to_string()
+  }
+
   #[test]
   fn normalize_note_content_to_markdown_should_render_note_reference() {
     let raw = json!({
@@ -1089,88 +1174,16 @@ mod tests {
 
   #[test]
   fn update_note_content_should_skip_duplicate_revision_for_unchanged_snapshot() {
-    let runtime = match Builder::new_current_thread().enable_all().build() {
-      Ok(value) => value,
-      Err(error) => panic!("failed to build tokio runtime: {error}"),
-    };
+    let runtime = setup_runtime();
     runtime.block_on(async {
-      let pool = match SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-      {
-        Ok(value) => value,
-        Err(error) => panic!("failed to open sqlite memory pool: {error}"),
-      };
-
-      if let Err(error) = sqlx::query(
-        "CREATE TABLE notes (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          content_hash TEXT NOT NULL DEFAULT '',
-          createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )",
-      )
-      .execute(&pool)
-      .await
-      {
-        panic!("failed to create notes table: {error}");
-      }
-
-      if let Err(error) = sqlx::query(
-        "CREATE TABLE note_links (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          note_id INTEGER NOT NULL,
-          link_type TEXT NOT NULL,
-          target_paper_id TEXT,
-          target_task_id INTEGER,
-          target_note_id INTEGER,
-          target_work_report_date TEXT,
-          createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )",
-      )
-      .execute(&pool)
-      .await
-      {
-        panic!("failed to create note_links table: {error}");
-      }
-
-      if let Err(error) = sqlx::query(
-        "CREATE TABLE note_revisions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          note_id INTEGER NOT NULL,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          content_length INTEGER NOT NULL,
-          source TEXT NOT NULL,
-          createdAt TEXT NOT NULL,
-          content_hash TEXT NOT NULL DEFAULT '',
-          snapshot_size INTEGER NOT NULL DEFAULT 0
-        )",
-      )
-      .execute(&pool)
-      .await
-      {
-        panic!("failed to create note_revisions table: {error}");
-      }
+      let pool = setup_note_revision_test_pool().await;
 
       let created = match create_note(&pool).await {
         Ok(value) => value,
         Err(error) => panic!("failed to create note: {error}"),
       };
 
-      let content_a = json!({
-        "type": "doc",
-        "content": [
-          {
-            "type": "paragraph",
-            "content": [{ "type": "text", "text": "same payload" }]
-          }
-        ]
-      })
-      .to_string();
+      let content_a = build_content("same payload");
       let content_b = String::from(
         r#"{"content":[{"content":[{"text":"same payload","type":"text"}],"type":"paragraph"}],"type":"doc"}"#,
       );
@@ -1183,6 +1196,7 @@ mod tests {
         &content_a,
         Some(&created.updated_at),
         "manual",
+        true,
         &links,
       )
       .await
@@ -1198,6 +1212,7 @@ mod tests {
         &content_b,
         Some(&first.detail.updated_at),
         "shortcut",
+        true,
         &links,
       )
       .await
@@ -1220,6 +1235,339 @@ mod tests {
       assert_eq!(second.revision_id, first.revision_id);
       assert_eq!(second.detail.updated_at, first.detail.updated_at);
       assert_eq!(second.saved_hash, first.saved_hash);
+    });
+  }
+
+  #[test]
+  fn update_note_content_should_skip_duplicate_revision_for_existing_history_snapshot() {
+    let runtime = setup_runtime();
+    runtime.block_on(async {
+      let pool = setup_note_revision_test_pool().await;
+      let links: [NoteLinkRefInput; 0] = [];
+
+      let created = match create_note(&pool).await {
+        Ok(value) => value,
+        Err(error) => panic!("failed to create note: {error}"),
+      };
+
+      let first = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("snapshot-a"),
+        Some(&created.updated_at),
+        "manual",
+        true,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save first snapshot: {error}"),
+      };
+
+      let second = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("snapshot-b"),
+        Some(&first.detail.updated_at),
+        "manual",
+        true,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save second snapshot: {error}"),
+      };
+
+      let third = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("snapshot-a"),
+        Some(&second.detail.updated_at),
+        "manual",
+        true,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save duplicate history snapshot: {error}"),
+      };
+
+      let revision_total: i64 =
+        match sqlx::query_scalar("SELECT COUNT(1) FROM note_revisions WHERE note_id = ?1")
+          .bind(created.id)
+          .fetch_one(&pool)
+          .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to count note revisions: {error}"),
+        };
+
+      assert_eq!(revision_total, 3);
+      assert_eq!(third.revision_id, first.revision_id);
+    });
+  }
+
+  #[test]
+  fn restore_note_content_should_not_create_new_revision() {
+    let runtime = setup_runtime();
+    runtime.block_on(async {
+      let pool = setup_note_revision_test_pool().await;
+      let links: [NoteLinkRefInput; 0] = [];
+
+      let created = match create_note(&pool).await {
+        Ok(value) => value,
+        Err(error) => panic!("failed to create note: {error}"),
+      };
+
+      let first = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("restore-a"),
+        Some(&created.updated_at),
+        "manual",
+        true,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save first snapshot: {error}"),
+      };
+
+      let second = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("restore-b"),
+        Some(&first.detail.updated_at),
+        "manual",
+        true,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to save second snapshot: {error}"),
+      };
+
+      let before_total: i64 =
+        match sqlx::query_scalar("SELECT COUNT(1) FROM note_revisions WHERE note_id = ?1")
+          .bind(created.id)
+          .fetch_one(&pool)
+          .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to count note revisions: {error}"),
+        };
+
+      let restored = match update_note_content_and_links(
+        &pool,
+        created.id,
+        &created.title,
+        &build_content("restore-a"),
+        Some(&second.detail.updated_at),
+        "restore",
+        false,
+        &links,
+      )
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to restore note snapshot: {error}"),
+      };
+
+      let after_total: i64 =
+        match sqlx::query_scalar("SELECT COUNT(1) FROM note_revisions WHERE note_id = ?1")
+          .bind(created.id)
+          .fetch_one(&pool)
+          .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to count note revisions after restore: {error}"),
+        };
+
+      assert_eq!(before_total, 3);
+      assert_eq!(after_total, 3);
+      assert_eq!(restored.revision_id, first.revision_id);
+      assert!(note_contents_semantically_equal(
+        &restored.detail.content,
+        &build_content("restore-a"),
+      ));
+    });
+  }
+
+  #[test]
+  fn note_revision_compaction_should_keep_latest_automatic_3_and_manual_10() {
+    let runtime = setup_runtime();
+    runtime.block_on(async {
+      let pool = setup_note_revision_test_pool().await;
+      let links: [NoteLinkRefInput; 0] = [];
+
+      let created = match create_note(&pool).await {
+        Ok(value) => value,
+        Err(error) => panic!("failed to create note: {error}"),
+      };
+      let mut updated_at = created.updated_at.clone();
+
+      for index in 1..=5 {
+        let response = match update_note_content_and_links(
+          &pool,
+          created.id,
+          &created.title,
+          &build_content(&format!("auto-{index}")),
+          Some(&updated_at),
+          "autosave",
+          true,
+          &links,
+        )
+        .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to save autosave snapshot {index}: {error}"),
+        };
+        updated_at = response.detail.updated_at;
+      }
+
+      for index in 1..=12 {
+        let response = match update_note_content_and_links(
+          &pool,
+          created.id,
+          &created.title,
+          &build_content(&format!("manual-{index}")),
+          Some(&updated_at),
+          "manual",
+          true,
+          &links,
+        )
+        .await
+        {
+          Ok(value) => value,
+          Err(error) => panic!("failed to save manual snapshot {index}: {error}"),
+        };
+        updated_at = response.detail.updated_at;
+      }
+
+      let auto_total: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(1) FROM note_revisions
+        WHERE note_id = ?1 AND trim(lower(source)) IN ('autosave', 'visibility')",
+      )
+      .bind(created.id)
+      .fetch_one(&pool)
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to count autosave revisions: {error}"),
+      };
+
+      let manual_total: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(1) FROM note_revisions
+        WHERE note_id = ?1 AND trim(lower(source)) NOT IN ('autosave', 'visibility')",
+      )
+      .bind(created.id)
+      .fetch_one(&pool)
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to count manual revisions: {error}"),
+      };
+
+      assert_eq!(auto_total, 3);
+      assert_eq!(manual_total, 10);
+    });
+  }
+
+  #[test]
+  fn compact_all_note_revisions_should_trim_legacy_oversized_history() {
+    let runtime = setup_runtime();
+    runtime.block_on(async {
+      let pool = setup_note_revision_test_pool().await;
+
+      let created = match create_note(&pool).await {
+        Ok(value) => value,
+        Err(error) => panic!("failed to create note: {error}"),
+      };
+
+      for index in 1..=8 {
+        let content = build_content(&format!("legacy-auto-{index}"));
+        if let Err(error) = sqlx::query(
+          "INSERT INTO note_revisions (
+            note_id, title, content, content_length, source, createdAt, content_hash, snapshot_size
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(created.id)
+        .bind(&created.title)
+        .bind(&content)
+        .bind(i64::try_from(content.chars().count()).unwrap_or(i64::MAX))
+        .bind("autosave")
+        .bind(format!("2026-01-{:02} 00:00:00", index))
+        .bind(build_snapshot_hash(&created.title, &content))
+        .bind(i64::try_from(content.len()).unwrap_or(i64::MAX))
+        .execute(&pool)
+        .await
+        {
+          panic!("failed to insert legacy autosave revision {index}: {error}");
+        }
+      }
+
+      for index in 1..=15 {
+        let content = build_content(&format!("legacy-manual-{index}"));
+        if let Err(error) = sqlx::query(
+          "INSERT INTO note_revisions (
+            note_id, title, content, content_length, source, createdAt, content_hash, snapshot_size
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(created.id)
+        .bind(&created.title)
+        .bind(&content)
+        .bind(i64::try_from(content.chars().count()).unwrap_or(i64::MAX))
+        .bind("manual")
+        .bind(format!("2026-02-{:02} 00:00:00", index))
+        .bind(build_snapshot_hash(&created.title, &content))
+        .bind(i64::try_from(content.len()).unwrap_or(i64::MAX))
+        .execute(&pool)
+        .await
+        {
+          panic!("failed to insert legacy manual revision {index}: {error}");
+        }
+      }
+
+      if let Err(error) = compact_all_note_revisions(&pool).await {
+        panic!("failed to compact legacy note revisions: {error}");
+      }
+
+      let auto_total: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(1) FROM note_revisions
+        WHERE note_id = ?1 AND trim(lower(source)) IN ('autosave', 'visibility')",
+      )
+      .bind(created.id)
+      .fetch_one(&pool)
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to count autosave revisions after legacy compaction: {error}"),
+      };
+
+      let manual_total: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(1) FROM note_revisions
+        WHERE note_id = ?1 AND trim(lower(source)) NOT IN ('autosave', 'visibility')",
+      )
+      .bind(created.id)
+      .fetch_one(&pool)
+      .await
+      {
+        Ok(value) => value,
+        Err(error) => panic!("failed to count manual revisions after legacy compaction: {error}"),
+      };
+
+      assert_eq!(auto_total, 3);
+      assert_eq!(manual_total, 10);
     });
   }
 }
@@ -1686,18 +2034,19 @@ async fn get_rule_by_id(pool: &SqlitePool, id: i64) -> Result<RuleDto, String> {
   })
 }
 
-const NOTE_HISTORY_KEEP_FULL_HOURS: i64 = 24;
-const NOTE_HISTORY_KEEP_HOURLY_DAYS: i64 = 30;
-const NOTE_HISTORY_KEEP_DAILY_DAYS: i64 = 90;
-const NOTE_HISTORY_MAX_BYTES_PER_NOTE: i64 = 20 * 1024 * 1024;
-const NOTE_HISTORY_MAX_BYTES_TOTAL: i64 = 256 * 1024 * 1024;
+const NOTE_HISTORY_KEEP_AUTOMATIC: usize = 3;
+const NOTE_HISTORY_KEEP_MANUAL: usize = 10;
 
 #[derive(Debug)]
 struct RevisionCompactRow {
   id: i64,
   source: String,
-  created_at: String,
-  snapshot_size: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionRetentionBucket {
+  Automatic,
+  Manual,
 }
 
 fn compute_content_hash(value: &str) -> String {
@@ -1734,12 +2083,11 @@ fn normalize_source(source: &str) -> String {
   }
 }
 
-fn parse_sqlite_datetime(value: &str) -> Option<NaiveDateTime> {
-  NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok()
-}
-
-fn is_key_revision_source(source: &str) -> bool {
-  matches!(source, "create" | "manual" | "shortcut" | "restore")
+fn classify_revision_retention_bucket(source: &str) -> RevisionRetentionBucket {
+  match normalize_source(source).as_str() {
+    "autosave" | "visibility" => RevisionRetentionBucket::Automatic,
+    _ => RevisionRetentionBucket::Manual,
+  }
 }
 
 pub async fn list_note_history(
@@ -1847,7 +2195,6 @@ pub async fn create_note(pool: &SqlitePool) -> Result<NoteDetailDto, String> {
   )
   .await?;
   compact_note_revisions_tx(&mut tx, detail.id).await?;
-  compact_global_note_revisions_tx(&mut tx).await?;
   tx.commit().await.map_err(|e| e.to_string())?;
   Ok(detail)
 }
@@ -1885,6 +2232,7 @@ pub async fn update_note_content_and_links(
   content: &str,
   expected_updated_at: Option<&str>,
   save_source: &str,
+  create_revision: bool,
   links: &[NoteLinkRefInput],
 ) -> Result<NoteSaveResultDto, String> {
   let saved_hash = build_snapshot_hash(title, content);
@@ -2107,17 +2455,32 @@ pub async fn update_note_content_and_links(
     created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
     updated_at: row.try_get("updatedAt").map_err(|e| e.to_string())?,
   };
-  let revision_id = append_note_revision_tx(
-    &mut tx,
-    detail.id,
-    &detail.title,
-    &detail.content,
-    save_source,
-    &detail.updated_at,
-  )
-  .await?;
+  let revision_id = if create_revision {
+    append_note_revision_tx(
+      &mut tx,
+      detail.id,
+      &detail.title,
+      &detail.content,
+      save_source,
+      &detail.updated_at,
+    )
+    .await?
+  } else {
+    let restored_hash = build_snapshot_hash(&detail.title, &detail.content);
+    match find_duplicate_note_revision_id_tx(
+      &mut tx,
+      detail.id,
+      &detail.title,
+      &detail.content,
+      &restored_hash,
+    )
+    .await?
+    {
+      Some(existing_id) => existing_id,
+      None => latest_note_revision_id_tx(&mut tx, id).await?,
+    }
+  };
   compact_note_revisions_tx(&mut tx, id).await?;
-  compact_global_note_revisions_tx(&mut tx).await?;
   tx.commit().await.map_err(|e| e.to_string())?;
 
   Ok(NoteSaveResultDto {
@@ -2226,25 +2589,10 @@ async fn append_note_revision_tx(
   let normalized_source = normalize_source(source);
   let snapshot_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
   let content_hash = build_snapshot_hash(title, content);
-  let latest_row = sqlx::query(
-    "SELECT id, title, COALESCE(content_hash, '') AS content_hash
-    FROM note_revisions
-    WHERE note_id = ?1
-    ORDER BY id DESC
-    LIMIT 1",
-  )
-  .bind(note_id)
-  .fetch_optional(&mut **tx)
-  .await
-  .map_err(|e| e.to_string())?;
-
-  if let Some(row) = latest_row {
-    let latest_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
-    let latest_title: String = row.try_get("title").map_err(|e| e.to_string())?;
-    let latest_hash: String = row.try_get("content_hash").map_err(|e| e.to_string())?;
-    if latest_hash == content_hash && latest_title == title {
-      return Ok(latest_id);
-    }
+  if let Some(existing_id) =
+    find_duplicate_note_revision_id_tx(tx, note_id, title, content, &content_hash).await?
+  {
+    return Ok(existing_id);
   }
 
   sqlx::query(
@@ -2271,6 +2619,65 @@ async fn append_note_revision_tx(
       .try_get("revision_id")
       .map_err(|e| e.to_string())?,
   )
+}
+
+async fn find_duplicate_note_revision_id_tx(
+  tx: &mut sqlx::Transaction<'_, Sqlite>,
+  note_id: i64,
+  title: &str,
+  content: &str,
+  content_hash: &str,
+) -> Result<Option<i64>, String> {
+  let hash_rows = sqlx::query(
+    "SELECT id, title, content
+    FROM note_revisions
+    WHERE note_id = ?1 AND COALESCE(content_hash, '') = ?2
+    ORDER BY id DESC",
+  )
+  .bind(note_id)
+  .bind(content_hash)
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  let mut checked_ids = HashSet::<i64>::new();
+  for row in hash_rows {
+    let revision_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+    checked_ids.insert(revision_id);
+    let existing_title: String = row.try_get("title").map_err(|e| e.to_string())?;
+    if existing_title != title {
+      continue;
+    }
+    let existing_content: String = row.try_get("content").map_err(|e| e.to_string())?;
+    if note_contents_semantically_equal(&existing_content, content) {
+      return Ok(Some(revision_id));
+    }
+  }
+
+  let title_rows = sqlx::query(
+    "SELECT id, content
+    FROM note_revisions
+    WHERE note_id = ?1 AND title = ?2
+    ORDER BY id DESC",
+  )
+  .bind(note_id)
+  .bind(title)
+  .fetch_all(&mut **tx)
+  .await
+  .map_err(|e| e.to_string())?;
+
+  for row in title_rows {
+    let revision_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+    if checked_ids.contains(&revision_id) {
+      continue;
+    }
+    let existing_content: String = row.try_get("content").map_err(|e| e.to_string())?;
+    if note_contents_semantically_equal(&existing_content, content) {
+      return Ok(Some(revision_id));
+    }
+  }
+
+  Ok(None)
 }
 
 async fn latest_note_revision_id_tx(
@@ -2301,10 +2708,7 @@ async fn compact_note_revisions_tx(
   let rows = sqlx::query(
     "SELECT
       id,
-      note_id,
-      source,
-      createdAt,
-      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size
+      source
     FROM note_revisions
     WHERE note_id = ?1
     ORDER BY id DESC",
@@ -2323,77 +2727,28 @@ async fn compact_note_revisions_tx(
       Ok(RevisionCompactRow {
         id: row.try_get("id").map_err(|e| e.to_string())?,
         source: row.try_get("source").map_err(|e| e.to_string())?,
-        created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
-        snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
       })
     })
     .collect::<Result<Vec<_>, _>>()?;
 
-  let now = Utc::now().naive_utc();
-  let full_cutoff = now - Duration::hours(NOTE_HISTORY_KEEP_FULL_HOURS);
-  let hourly_cutoff = now - Duration::days(NOTE_HISTORY_KEEP_HOURLY_DAYS);
-  let daily_cutoff = now - Duration::days(NOTE_HISTORY_KEEP_DAILY_DAYS);
-
   let mut keep = HashSet::<i64>::new();
-  let mut essential = HashSet::<i64>::new();
-  let mut hourly_seen = HashSet::<String>::new();
-  let mut daily_seen = HashSet::<String>::new();
-
-  if let Some(latest) = revisions.first() {
-    keep.insert(latest.id);
-    essential.insert(latest.id);
-  }
-  if let Some(oldest) = revisions.last() {
-    keep.insert(oldest.id);
-    essential.insert(oldest.id);
-  }
+  let mut kept_automatic = 0_usize;
+  let mut kept_manual = 0_usize;
 
   for row in &revisions {
-    let source = normalize_source(&row.source);
-    if is_key_revision_source(&source) {
-      keep.insert(row.id);
-      essential.insert(row.id);
-      continue;
-    }
-    let Some(created_at) = parse_sqlite_datetime(&row.created_at) else {
-      keep.insert(row.id);
-      continue;
-    };
-    if created_at >= full_cutoff {
-      keep.insert(row.id);
-      continue;
-    }
-    if created_at >= hourly_cutoff {
-      let bucket = created_at.format("%Y-%m-%d %H").to_string();
-      if hourly_seen.insert(bucket) {
-        keep.insert(row.id);
+    match classify_revision_retention_bucket(&row.source) {
+      RevisionRetentionBucket::Automatic => {
+        if kept_automatic < NOTE_HISTORY_KEEP_AUTOMATIC {
+          keep.insert(row.id);
+          kept_automatic += 1;
+        }
       }
-      continue;
-    }
-    if created_at >= daily_cutoff {
-      let bucket = created_at.format("%Y-%m-%d").to_string();
-      if daily_seen.insert(bucket) {
-        keep.insert(row.id);
+      RevisionRetentionBucket::Manual => {
+        if kept_manual < NOTE_HISTORY_KEEP_MANUAL {
+          keep.insert(row.id);
+          kept_manual += 1;
+        }
       }
-    }
-  }
-
-  let mut kept_size = revisions
-    .iter()
-    .filter(|row| keep.contains(&row.id))
-    .map(|row| row.snapshot_size.max(0))
-    .sum::<i64>();
-
-  if kept_size > NOTE_HISTORY_MAX_BYTES_PER_NOTE {
-    for row in revisions.iter().rev() {
-      if kept_size <= NOTE_HISTORY_MAX_BYTES_PER_NOTE {
-        break;
-      }
-      if !keep.contains(&row.id) || essential.contains(&row.id) {
-        continue;
-      }
-      keep.remove(&row.id);
-      kept_size = kept_size.saturating_sub(row.snapshot_size.max(0));
     }
   }
 
@@ -2404,87 +2759,40 @@ async fn compact_note_revisions_tx(
   delete_note_revisions_by_ids_tx(tx, &delete_ids).await
 }
 
-async fn compact_global_note_revisions_tx(
-  tx: &mut sqlx::Transaction<'_, Sqlite>,
-) -> Result<(), String> {
-  let rows = sqlx::query(
-    "SELECT
-      id,
-      note_id,
-      source,
-      createdAt,
-      COALESCE(snapshot_size, content_length, length(content)) AS snapshot_size
-    FROM note_revisions
-    ORDER BY createdAt ASC, id ASC",
+async fn compact_all_note_revisions(pool: &SqlitePool) -> Result<(), String> {
+  sqlx::query(
+    "WITH ranked AS (
+      SELECT
+        id,
+        note_id,
+        CASE
+          WHEN trim(lower(COALESCE(source, ''))) IN ('autosave', 'visibility') THEN 'automatic'
+          ELSE 'manual'
+        END AS bucket,
+        ROW_NUMBER() OVER (
+          PARTITION BY note_id,
+          CASE
+            WHEN trim(lower(COALESCE(source, ''))) IN ('autosave', 'visibility') THEN 'automatic'
+            ELSE 'manual'
+          END
+          ORDER BY id DESC
+        ) AS bucket_rank
+      FROM note_revisions
+    )
+    DELETE FROM note_revisions
+    WHERE id IN (
+      SELECT id
+      FROM ranked
+      WHERE (bucket = 'automatic' AND bucket_rank > ?1)
+        OR (bucket = 'manual' AND bucket_rank > ?2)
+    )",
   )
-  .fetch_all(&mut **tx)
+  .bind(i64::try_from(NOTE_HISTORY_KEEP_AUTOMATIC).unwrap_or(i64::MAX))
+  .bind(i64::try_from(NOTE_HISTORY_KEEP_MANUAL).unwrap_or(i64::MAX))
+  .execute(pool)
   .await
   .map_err(|e| e.to_string())?;
-  if rows.is_empty() {
-    return Ok(());
-  }
-  let revisions = rows
-    .iter()
-    .map(|row| -> Result<RevisionCompactRow, String> {
-      Ok(RevisionCompactRow {
-        id: row.try_get("id").map_err(|e| e.to_string())?,
-        source: row.try_get("source").map_err(|e| e.to_string())?,
-        created_at: row.try_get("createdAt").map_err(|e| e.to_string())?,
-        snapshot_size: row.try_get("snapshot_size").map_err(|e| e.to_string())?,
-      })
-    })
-    .collect::<Result<Vec<_>, _>>()?;
-
-  let latest_rows = sqlx::query(
-    "SELECT note_id, MAX(id) AS revision_id
-    FROM note_revisions
-    GROUP BY note_id",
-  )
-  .fetch_all(&mut **tx)
-  .await
-  .map_err(|e| e.to_string())?;
-  let oldest_rows = sqlx::query(
-    "SELECT note_id, MIN(id) AS revision_id
-    FROM note_revisions
-    GROUP BY note_id",
-  )
-  .fetch_all(&mut **tx)
-  .await
-  .map_err(|e| e.to_string())?;
-
-  let mut protected = HashSet::<i64>::new();
-  for row in latest_rows {
-    protected.insert(row.try_get("revision_id").map_err(|e| e.to_string())?);
-  }
-  for row in oldest_rows {
-    protected.insert(row.try_get("revision_id").map_err(|e| e.to_string())?);
-  }
-  for row in &revisions {
-    if is_key_revision_source(&normalize_source(&row.source)) {
-      protected.insert(row.id);
-    }
-  }
-
-  let mut total_size = revisions
-    .iter()
-    .map(|row| row.snapshot_size.max(0))
-    .sum::<i64>();
-  if total_size <= NOTE_HISTORY_MAX_BYTES_TOTAL {
-    return Ok(());
-  }
-
-  let mut delete_ids = Vec::new();
-  for row in &revisions {
-    if total_size <= NOTE_HISTORY_MAX_BYTES_TOTAL {
-      break;
-    }
-    if protected.contains(&row.id) {
-      continue;
-    }
-    delete_ids.push(row.id);
-    total_size = total_size.saturating_sub(row.snapshot_size.max(0));
-  }
-  delete_note_revisions_by_ids_tx(tx, &delete_ids).await
+  Ok(())
 }
 
 async fn delete_note_revisions_by_ids_tx(
@@ -2858,6 +3166,7 @@ async fn ensure_note_revisions_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+  compact_all_note_revisions(pool).await?;
   Ok(())
 }
 
