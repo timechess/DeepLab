@@ -687,6 +687,78 @@ describe("MathInputAssist display block behaviors", () => {
     editor.destroy();
   });
 
+  test("does not open command menu when cursor is before existing backslash", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "\\left\\alpha" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const contentStart = findParagraphCursorByText(editor, "\\left\\alpha");
+    const cursorBeforeBackslash = contentStart + "\\left".length;
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, cursorBeforeBackslash),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).toBeNull();
+    editor.destroy();
+  });
+
+  test("does not open on caret move within existing command, but opens after typing \\", async () => {
+    const editor = createEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "\\alpha + \\beta" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "$$" }],
+        },
+      ],
+    });
+
+    const contentStart = findParagraphCursorByText(editor, "\\alpha + \\beta");
+    const cursorAfterExistingCommand = contentStart + "\\alpha".length;
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, cursorAfterExistingCommand),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).toBeNull();
+
+    insertAt(editor, editor.state.selection.from, "\\");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    menu = document.body.querySelector(".note-math-command-menu");
+    expect(menu).not.toBeNull();
+    editor.destroy();
+  });
+
   test("reopens command menu after typing \\ again post-completion", async () => {
     const editor = createEditor({
       type: "doc",

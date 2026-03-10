@@ -408,7 +408,7 @@ pre {
 }
 
 .note-editor .tiptap-mathematics-render[data-type="block-math"] {
-  margin: 0.45rem 0;
+  margin: 0.35rem 0;
   padding: 0.45rem 0.6rem;
 }
 
@@ -451,7 +451,7 @@ pre {
   overflow-x: auto;
   overflow-y: hidden;
   text-align: center;
-  margin: 0.8rem 0;
+  margin: 0.35rem 0;
   padding: 0.2rem 0;
   border: none;
   background: transparent;
@@ -522,11 +522,18 @@ pre {
 .note-editor .tiptap-mathematics-render[data-type="block-math"] {
   overflow-x: auto;
   overflow-y: hidden;
-  margin: 0.8rem 0;
+  margin: 0.35rem 0;
   padding: 0.2rem 0;
   border: none;
   background: transparent;
   box-shadow: none;
+}
+
+.note-editor p:has(> .Tiptap-mathematics-render--display:only-child),
+.note-editor
+  p:has(> .tiptap-mathematics-render[data-type="block-math"]:only-child) {
+  margin-top: 0.18rem;
+  margin-bottom: 0.22rem;
 }
 
 .note-editor .tiptap-mathematics-render[data-type="inline-math"] {

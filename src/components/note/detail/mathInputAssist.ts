@@ -923,7 +923,12 @@ function isInsideDisplayMathSkeleton(state: EditorState): boolean {
 function findMathCommandMatch(config: Trigger): SuggestionMatch {
   const { $position } = config;
   const parentText = $position.parent.textContent;
-  const textBefore = parentText.slice(0, $position.parentOffset);
+  const cursorOffset = $position.parentOffset;
+  const charAfterCursor = parentText[cursorOffset] ?? "";
+  if (charAfterCursor === "\\") {
+    return null;
+  }
+  const textBefore = parentText.slice(0, cursorOffset);
   const match = textBefore.match(/\\([A-Za-z]*)$/);
   if (!match) {
     return null;
@@ -1243,6 +1248,11 @@ export const MathInputAssist = Extension.create({
         findSuggestionMatch: findMathCommandMatch,
         allow: ({ state }) => isInMathContext(state),
         shouldShow: ({ editor, transaction }) => {
+          // Do not trigger completion on pure caret movement inside existing math.
+          // Only text-changing transactions should be able to open/reopen the menu.
+          if (transaction.selectionSet && !transaction.docChanged) {
+            return false;
+          }
           const maxDocPosition = Math.max(1, editor.state.doc.nodeSize - 2);
           completionSuppressionRange =
             updateCompletionSuppressionRangeFromTransaction(
